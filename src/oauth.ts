@@ -216,6 +216,16 @@ export function buildOAuthRouter(): Router {
       clientName,
       createdAt: Date.now(),
     });
+    console.error(
+      JSON.stringify({
+        ts: new Date().toISOString(),
+        level: "info",
+        msg: "client registered via DCR",
+        client_id: clientId,
+        redirect_uris: redirectUris,
+        client_name: clientName,
+      })
+    );
 
     res.status(201).json({
       client_id: clientId,
@@ -249,6 +259,18 @@ export function buildOAuthRouter(): Router {
     }
     const client = clients.get(client_id);
     if (!client || !client.redirectUris.includes(redirect_uri)) {
+      console.error(
+        JSON.stringify({
+          ts: new Date().toISOString(),
+          level: "warn",
+          msg: "authorize rejected: client_id/redirect_uri mismatch",
+          received_client_id: client_id,
+          received_redirect_uri: redirect_uri,
+          client_found: Boolean(client),
+          client_registered_redirect_uris: client?.redirectUris ?? null,
+          known_client_ids: Array.from(clients.keys()),
+        })
+      );
       res.status(400).send("Unknown client_id or redirect_uri not registered for this client.");
       return;
     }
