@@ -25,6 +25,12 @@ optional `account` parameter to pick which mailbox to act on.
   works for local/VPS use.
 - **CalDAV/calendar tools removed** — not needed for this deployment, cuts
   the dependency surface (`tsdav`, `ical.js`).
+- **Sending via Brevo's HTTP API, not direct SMTP** ([src/brevo-client.ts](src/brevo-client.ts)):
+  Render's free tier blocks all outbound traffic to SMTP ports (25/465/587)
+  — confirmed against three different mail providers, not fixable from our
+  side. `send_message` routes through Brevo (HTTPS, not blocked) when
+  `BREVO_API_KEY` is set; falls back to direct SMTP otherwise. IMAP is
+  unaffected. See [docs/ACCOUNTS.md](docs/ACCOUNTS.md#sending-brevo-instead-of-direct-smtp).
 
 ## Architecture
 
@@ -37,8 +43,8 @@ Render (TLS terminated automatically, custom domain mcp-mail.<domain>)
 this process (single Node service)
     ├── /.well-known/oauth-authorization-server, /register, /authorize, /token   (src/oauth.ts)
     ├── /mcp  (Bearer-gated MCP Streamable HTTP transport)
-    │     ├── ImapClient   ──▶ imapflow   ──▶ IMAP server (993/143) per account
-    │     └── SmtpClient   ──▶ nodemailer ──▶ SMTP server (465/587) per account
+    │     ├── ImapClient   ──▶ imapflow      ──▶ IMAP server (993/143) per account
+    │     └── send_message ──▶ Brevo HTTPS API  (SMTP ports blocked on Render free tier)
     └── /health
 ```
 
@@ -48,7 +54,8 @@ this process (single Node service)
 npm install
 cp .env.example .env
 # fill in PUBLIC_URL, ACCOUNTS_JSON (see docs/ACCOUNTS.md), OAUTH_USER,
-# OAUTH_PASS, and JWT_SECRET (openssl rand -hex 32)
+# OAUTH_PASS, JWT_SECRET (openssl rand -hex 32), and BREVO_API_KEY
+# (only needed if raw SMTP egress is blocked where you're deploying)
 npm run dev
 ```
 
@@ -60,9 +67,11 @@ Claude.ai).
 
 ## Accounts
 
-See [docs/ACCOUNTS.md](docs/ACCOUNTS.md) for the `accounts.json` schema and
-per-provider setup (Gmail app passwords, Netcup Webhosting IMAP/SMTP,
-and why Hotmail/Outlook.com needs a separate OAuth2 flow).
+See [docs/ACCOUNTS.md](docs/ACCOUNTS.md) for the `accounts.json` schema,
+per-provider setup (Gmail app passwords, Netcup Webhosting IMAP/SMTP), why
+Google Workspace/Hotmail need a separate OAuth2 flow (not yet implemented),
+and the Brevo sender-domain-authentication steps needed for `send_message`
+to show the real address instead of a `brevosend.com` substitute.
 
 ## Tools exposed to Claude
 
