@@ -55,6 +55,12 @@ export interface MailDefaults {
   sentFolder: string | null;
 }
 
+export interface GoogleOAuthConfig {
+  clientId: string;
+  clientSecret: string;
+  refreshToken: string;
+}
+
 export interface Account {
   id: string;
   label: string;
@@ -62,6 +68,15 @@ export interface Account {
   imap: ImapCreds;
   smtp: SmtpCreds;
   mail: MailDefaults;
+  /**
+   * Google OAuth2 (Gmail personal / Workspace). When present, sending
+   * always goes through the Gmail API instead of Brevo/direct SMTP
+   * (neither can authenticate as a google.com/gmail.com address we don't
+   * own). If `imap.pass` is also empty, IMAP uses XOAUTH2 with this same
+   * grant instead of a password — needed for Workspace accounts where
+   * app passwords are disabled entirely. See docs/ACCOUNTS.md.
+   */
+  google?: GoogleOAuthConfig;
 }
 
 export interface AccountsFile {
@@ -281,40 +296,62 @@ function parseAccount(raw: unknown, index: number): Account {
       `accounts[${index}].id must match ${ID_PATTERN} (a-z, 0-9, _, -; 1-32 chars; start alphanumeric)`
     );
   }
+  const google = a.google ? parseGoogle(a.google, `accounts[${index}].google`) : undefined;
   return {
     id,
     label: expectStr(a.label, `accounts[${index}].label`),
     default: a.default === true ? true : undefined,
-    imap: parseImap(a.imap, `accounts[${index}].imap`),
-    smtp: parseSmtp(a.smtp, `accounts[${index}].smtp`),
+    imap: parseImap(a.imap, `accounts[${index}].imap`, Boolean(google)),
+    smtp: parseSmtp(a.smtp, `accounts[${index}].smtp`, Boolean(google)),
     mail: parseMail(a.mail, `accounts[${index}].mail`),
+    google,
   };
 }
 
-function parseImap(raw: unknown, where: string): ImapCreds {
+function parseGoogle(raw: unknown, where: string): GoogleOAuthConfig {
   if (!raw || typeof raw !== "object") {
     throw new AccountsStoreError(`${where} must be an object`);
   }
   const o = raw as Record<string, unknown>;
   return {
+    clientId: expectStr(o.clientId, `${where}.clientId`),
+    clientSecret: expectStr(o.clientSecret, `${where}.clientSecret`),
+    refreshToken: expectStr(o.refreshToken, `${where}.refreshToken`),
+  };
+}
+
+function parseImap(raw: unknown, where: string, allowEmptyPass: boolean): ImapCreds {
+  if (!raw || typeof raw !== "object") {
+    throw new AccountsStoreError(`${where} must be an object`);
+  }
+  const o = raw as Record<string, unknown>;
+  const passRaw = o.pass;
+  if (typeof passRaw !== "string" || (passRaw === "" && !allowEmptyPass)) {
+    throw new AccountsStoreError(`${where}.pass must be a non-empty string`);
+  }
+  return {
     host: expectStr(o.host, `${where}.host`),
     port: expectInt(o.port, `${where}.port`),
     user: expectStr(o.user, `${where}.user`),
-    pass: expectStr(o.pass, `${where}.pass`),
+    pass: passRaw,
     tls: typeof o.tls === "boolean" ? o.tls : true,
   };
 }
 
-function parseSmtp(raw: unknown, where: string): SmtpCreds {
+function parseSmtp(raw: unknown, where: string, allowEmptyPass: boolean): SmtpCreds {
   if (!raw || typeof raw !== "object") {
     throw new AccountsStoreError(`${where} must be an object`);
   }
   const o = raw as Record<string, unknown>;
+  const passRaw = o.pass;
+  if (typeof passRaw !== "string" || (passRaw === "" && !allowEmptyPass)) {
+    throw new AccountsStoreError(`${where}.pass must be a non-empty string`);
+  }
   return {
     host: expectStr(o.host, `${where}.host`),
     port: expectInt(o.port, `${where}.port`),
     user: expectStr(o.user, `${where}.user`),
-    pass: expectStr(o.pass, `${where}.pass`),
+    pass: passRaw,
     tls: typeof o.tls === "boolean" ? o.tls : true,
   };
 }

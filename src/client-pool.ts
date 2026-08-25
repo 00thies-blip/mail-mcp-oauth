@@ -1,19 +1,24 @@
 /**
  * Per-account client pool.
  *
- * Holds one ImapClient + SmtpClient per account, lazy-initialized on first
- * use. When accounts change the entire pool is dropped and rebuilt on next
- * request — simpler than diffing per-field credential changes, and IMAP
- * reconnects are cheap (~one TLS handshake).
+ * Holds one ImapClient + SmtpClient (+ optional GmailApiClient) per
+ * account, lazy-initialized on first use. When accounts change the entire
+ * pool is dropped and rebuilt on next request — simpler than diffing
+ * per-field credential changes, and IMAP reconnects are cheap (~one TLS
+ * handshake).
  */
 
 import { ImapClient } from "./imap-client.js";
 import { SmtpClient } from "./smtp-client.js";
+import { GmailApiClient } from "./gmail-client.js";
+import { getGoogleAccessToken } from "./google-oauth.js";
 import { Account, AccountsStore } from "./accounts.js";
 
 interface AccountClients {
   imap: ImapClient;
   smtp: SmtpClient;
+  /** Set for Google-hosted mailboxes — send_message prefers this over Brevo/direct SMTP. */
+  gmailApi: GmailApiClient | null;
   draftsFolder: string;
   sentFolder: string | null;
 }
@@ -55,12 +60,19 @@ export class ClientPool {
   }
 
   private build(account: Account): AccountClients {
+    const google = account.google;
     const imap = new ImapClient({
       host: account.imap.host,
       port: account.imap.port,
       user: account.imap.user,
       pass: account.imap.pass,
       secure: account.imap.tls,
+      // Empty imap.pass + a google block = Workspace account with app
+      // passwords disabled; authenticate IMAP via XOAUTH2 instead.
+      accessTokenProvider:
+        google && account.imap.pass === ""
+          ? () => getGoogleAccessToken(google)
+          : undefined,
     });
     const smtp = new SmtpClient(
       {
@@ -75,9 +87,14 @@ export class ClientPool {
         fromName: account.mail.defaultFromName || undefined,
       }
     );
+    // smtp is still built even when using Gmail API to send — its
+    // buildRawSource() (pure local MIME composition, no network) is reused
+    // by both the Gmail API path and the Sent-folder-copy step.
+    const gmailApi = google ? new GmailApiClient(google, smtp) : null;
     return {
       imap,
       smtp,
+      gmailApi,
       draftsFolder: account.mail.draftsFolder,
       sentFolder: account.mail.sentFolder,
     };

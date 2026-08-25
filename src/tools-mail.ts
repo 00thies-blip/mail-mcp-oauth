@@ -223,7 +223,7 @@ export function registerMailTools(
       if (!args.text && !args.html) {
         throw new Error("Provide at least one of `text` or `html`.");
       }
-      const { smtp, imap, sentFolder } = pool.for(args.account);
+      const { smtp, imap, sentFolder, gmailApi } = pool.for(args.account);
       const outgoing = {
         to: args.to,
         cc: args.cc,
@@ -240,9 +240,11 @@ export function registerMailTools(
           contentType: a.content_type,
         })),
       };
-      const result = brevo
-        ? await brevo.send(outgoing, resolveFromAddress(store, args.account))
-        : await smtp.send(outgoing);
+      const result = gmailApi
+        ? await gmailApi.send(outgoing)
+        : brevo
+          ? await brevo.send(outgoing, resolveFromAddress(store, args.account))
+          : await smtp.send(outgoing);
       // Best-effort copy to Sent folder.
       let savedToSent = false;
       if (sentFolder) {

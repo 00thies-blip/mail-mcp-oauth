@@ -18,6 +18,14 @@ export interface ImapAuth {
   user: string;
   pass: string;
   secure: boolean;
+  /**
+   * When set, used instead of `pass` (XOAUTH2). Called fresh every time a
+   * new connection is established — not cached here — so a token that
+   * expired mid-session (imapflow reconnects on error, see ensureConnected)
+   * picks up a live one on the next connect rather than a stale one baked
+   * in at construction time.
+   */
+  accessTokenProvider?: () => Promise<string>;
 }
 
 export interface MailboxSummary {
@@ -71,14 +79,21 @@ export interface SearchCriteria {
 export class ImapClient {
   private client: ImapFlow | null = null;
   private connecting: Promise<ImapFlow> | null = null;
-  private readonly opts: ImapFlowOptions;
+  private readonly auth: ImapAuth;
 
   constructor(auth: ImapAuth) {
-    this.opts = {
-      host: auth.host,
-      port: auth.port,
-      secure: auth.secure,
-      auth: { user: auth.user, pass: auth.pass },
+    this.auth = auth;
+  }
+
+  private async buildOpts(): Promise<ImapFlowOptions> {
+    const auth = this.auth.accessTokenProvider
+      ? { user: this.auth.user, accessToken: await this.auth.accessTokenProvider() }
+      : { user: this.auth.user, pass: this.auth.pass };
+    return {
+      host: this.auth.host,
+      port: this.auth.port,
+      secure: this.auth.secure,
+      auth,
       logger: false,
     };
   }
@@ -87,7 +102,8 @@ export class ImapClient {
     if (this.client && this.client.usable) return this.client;
     if (this.connecting) return this.connecting;
     this.connecting = (async (): Promise<ImapFlow> => {
-      const client = new ImapFlow(this.opts);
+      const opts = await this.buildOpts();
+      const client = new ImapFlow(opts);
       client.on("error", () => {
         // Mark unusable so next call reconnects.
         if (this.client === client) this.client = null;
