@@ -1,0 +1,418 @@
+/**
+ * OAuth 2.1 authorization server, folded into the same process as the MCP
+ * backend (no separate shim service — Render runs one web service on one
+ * port, and everything here is stateless so it survives redeploys/restarts
+ * without a database):
+ *
+ *   - GET  /.well-known/oauth-authorization-server   (RFC 8414)
+ *   - GET  /.well-known/oauth-protected-resource      (RFC 9728)
+ *   - POST /register                                   Dynamic Client Registration (RFC 7591)
+ *   - GET  /authorize + POST /authorize                 Login + consent (single hard-coded user)
+ *   - POST /token                                       authorization_code + refresh_token grants
+ *
+ * Design choices driven by "no persistent disk on Render":
+ *   - Access + refresh tokens are self-contained JWTs (HS256, JWT_SECRET).
+ *     No token store needed; validation is pure signature + expiry check.
+ *   - Registered OAuth clients (from DCR) and in-flight authorization codes
+ *     live in memory only. A restart forces Claude.ai to re-register and
+ *     re-authorize, which its MCP client handles automatically on 401.
+ *   - The GET /authorize request is round-tripped through the login form as
+ *     a signed JWT "ticket" instead of a server-side session, so there's no
+ *     session store either.
+ *
+ * PKCE (S256) is mandatory — this server never issues a code without it,
+ * consistent with OAuth 2.1's removal of the plain method and of the
+ * implicit grant.
+ */
+
+import { randomBytes, createHash, timingSafeEqual } from "node:crypto";
+import express, { Request, Response, Router } from "express";
+import jwt from "jsonwebtoken";
+import { config } from "./config.js";
+
+const AUTH_CODE_TTL_MS = 2 * 60 * 1000; // 2 minutes
+const ACCESS_TOKEN_TTL = "1h";
+const REFRESH_TOKEN_TTL = "180d";
+const TICKET_TTL = "10m";
+const SUBJECT = "lukasthies";
+
+interface RegisteredClient {
+  clientId: string;
+  redirectUris: string[];
+  clientName: string;
+  createdAt: number;
+}
+
+interface AuthCode {
+  clientId: string;
+  redirectUri: string;
+  codeChallenge: string;
+  scope: string;
+  expiresAt: number;
+}
+
+// --- in-memory state -------------------------------------------------
+
+const clients = new Map<string, RegisteredClient>();
+const authCodes = new Map<string, AuthCode>();
+
+function pruneExpiredCodes(): void {
+  const now = Date.now();
+  for (const [code, entry] of authCodes) {
+    if (entry.expiresAt < now) authCodes.delete(code);
+  }
+}
+
+// crude per-IP login throttle — 10 failed attempts / 15 min
+const loginAttempts = new Map<string, { count: number; resetAt: number }>();
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_MAX_ATTEMPTS = 10;
+
+function isLockedOut(ip: string): boolean {
+  const entry = loginAttempts.get(ip);
+  if (!entry) return false;
+  if (entry.resetAt < Date.now()) {
+    loginAttempts.delete(ip);
+    return false;
+  }
+  return entry.count >= LOGIN_MAX_ATTEMPTS;
+}
+
+function recordFailedLogin(ip: string): void {
+  const now = Date.now();
+  const entry = loginAttempts.get(ip);
+  if (!entry || entry.resetAt < now) {
+    loginAttempts.set(ip, { count: 1, resetAt: now + LOGIN_WINDOW_MS });
+    return;
+  }
+  entry.count += 1;
+}
+
+function clearLoginAttempts(ip: string): void {
+  loginAttempts.delete(ip);
+}
+
+// --- helpers -----------------------------------------------------------
+
+function randomId(bytes = 16): string {
+  return randomBytes(bytes).toString("hex");
+}
+
+function base64url(buf: Buffer): string {
+  return buf.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function verifyPkce(verifier: string, challenge: string): boolean {
+  if (!verifier || !challenge) return false;
+  const computed = base64url(createHash("sha256").update(verifier).digest());
+  const a = Buffer.from(computed);
+  const b = Buffer.from(challenge);
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
+}
+
+function safeEqual(a: string, b: string): boolean {
+  const bufA = Buffer.from(a);
+  const bufB = Buffer.from(b);
+  if (bufA.length !== bufB.length) return false;
+  return timingSafeEqual(bufA, bufB);
+}
+
+function html(strings: TemplateStringsArray, ...values: string[]): string {
+  return strings.reduce((acc, s, i) => acc + s + (values[i] ?? ""), "");
+}
+
+function loginPage(opts: { ticket: string; error?: string }): string {
+  const errorBlock = opts.error
+    ? `<p class="error">${opts.error}</p>`
+    : "";
+  return html`<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in — Mail MCP</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #0f1115; color: #e6e6e6; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
+  form { background: #1a1d24; padding: 2rem 2.5rem; border-radius: 12px; box-shadow: 0 10px 40px rgba(0,0,0,.4); width: 100%; max-width: 340px; }
+  h1 { font-size: 1.1rem; margin: 0 0 1.25rem; font-weight: 600; }
+  label { display: block; font-size: .8rem; margin-bottom: .3rem; color: #9aa0aa; }
+  input[type=text], input[type=password] { width: 100%; box-sizing: border-box; padding: .6rem .7rem; margin-bottom: 1rem; border-radius: 6px; border: 1px solid #33363f; background: #0f1115; color: #e6e6e6; font-size: .95rem; }
+  button { width: 100%; padding: .65rem; border-radius: 6px; border: none; background: #4f7cff; color: white; font-weight: 600; font-size: .95rem; cursor: pointer; }
+  button:hover { background: #3f68e0; }
+  .error { color: #ff6b6b; font-size: .85rem; margin: -.5rem 0 1rem; }
+</style>
+</head>
+<body>
+  <form method="POST" action="/authorize">
+    <h1>Sign in to connect Mail MCP</h1>
+    ${errorBlock}
+    <input type="hidden" name="ticket" value="${opts.ticket}">
+    <label for="username">Username</label>
+    <input type="text" id="username" name="username" autocomplete="username" required autofocus>
+    <label for="password">Password</label>
+    <input type="password" id="password" name="password" autocomplete="current-password" required>
+    <button type="submit">Sign in</button>
+  </form>
+</body>
+</html>`;
+}
+
+// --- router --------------------------------------------------------------
+
+export function buildOAuthRouter(): Router {
+  const router = Router();
+  router.use(express.urlencoded({ extended: false }));
+
+  router.get("/.well-known/oauth-authorization-server", (_req, res) => {
+    const issuer = config.publicUrl;
+    res.json({
+      issuer,
+      authorization_endpoint: `${issuer}/authorize`,
+      token_endpoint: `${issuer}/token`,
+      registration_endpoint: `${issuer}/register`,
+      response_types_supported: ["code"],
+      grant_types_supported: ["authorization_code", "refresh_token"],
+      code_challenge_methods_supported: ["S256"],
+      token_endpoint_auth_methods_supported: ["none"],
+      scopes_supported: ["mcp"],
+    });
+  });
+
+  router.get("/.well-known/oauth-protected-resource", (_req, res) => {
+    const issuer = config.publicUrl;
+    res.json({
+      resource: `${issuer}/mcp`,
+      authorization_servers: [issuer],
+    });
+  });
+
+  router.post("/register", express.json(), (req, res) => {
+    const body = req.body ?? {};
+    const redirectUris = Array.isArray(body.redirect_uris) ? body.redirect_uris : [];
+    if (redirectUris.length === 0 || !redirectUris.every((u: unknown) => typeof u === "string")) {
+      res.status(400).json({ error: "invalid_client_metadata", error_description: "redirect_uris must be a non-empty array of strings" });
+      return;
+    }
+    for (const uri of redirectUris) {
+      try {
+        const parsed = new URL(uri);
+        if (parsed.protocol !== "https:" && !(parsed.protocol === "http:" && parsed.hostname === "localhost")) {
+          res.status(400).json({ error: "invalid_redirect_uri", error_description: `${uri} must be https:// (or http://localhost for local testing)` });
+          return;
+        }
+      } catch {
+        res.status(400).json({ error: "invalid_redirect_uri", error_description: `${uri} is not a valid URL` });
+        return;
+      }
+    }
+
+    const clientId = randomId();
+    const clientName = typeof body.client_name === "string" ? body.client_name.slice(0, 200) : "MCP client";
+    clients.set(clientId, {
+      clientId,
+      redirectUris,
+      clientName,
+      createdAt: Date.now(),
+    });
+
+    res.status(201).json({
+      client_id: clientId,
+      client_id_issued_at: Math.floor(Date.now() / 1000),
+      redirect_uris: redirectUris,
+      token_endpoint_auth_method: "none",
+      grant_types: ["authorization_code", "refresh_token"],
+      response_types: ["code"],
+      client_name: clientName,
+    });
+  });
+
+  router.get("/authorize", (req: Request, res: Response) => {
+    const {
+      response_type,
+      client_id,
+      redirect_uri,
+      state,
+      code_challenge,
+      code_challenge_method,
+      scope,
+    } = req.query;
+
+    if (response_type !== "code") {
+      res.status(400).send("Unsupported response_type. Only 'code' is supported.");
+      return;
+    }
+    if (typeof client_id !== "string" || typeof redirect_uri !== "string") {
+      res.status(400).send("Missing client_id or redirect_uri.");
+      return;
+    }
+    const client = clients.get(client_id);
+    if (!client || !client.redirectUris.includes(redirect_uri)) {
+      res.status(400).send("Unknown client_id or redirect_uri not registered for this client.");
+      return;
+    }
+    if (code_challenge_method !== "S256" || typeof code_challenge !== "string" || code_challenge.length < 43) {
+      res.status(400).send("PKCE with code_challenge_method=S256 is required.");
+      return;
+    }
+
+    const ticket = jwt.sign(
+      {
+        purpose: "authorize",
+        client_id,
+        redirect_uri,
+        state: typeof state === "string" ? state : "",
+        code_challenge,
+        scope: typeof scope === "string" ? scope : "mcp",
+      },
+      config.jwtSecret,
+      { expiresIn: TICKET_TTL }
+    );
+
+    res.set("Content-Type", "text/html; charset=utf-8");
+    res.send(loginPage({ ticket }));
+  });
+
+  router.post("/authorize", (req: Request, res: Response) => {
+    const ip = req.ip ?? "unknown";
+    const { ticket, username, password } = req.body ?? {};
+
+    if (typeof ticket !== "string") {
+      res.status(400).send("Missing or expired login session. Please retry the connection from Claude.");
+      return;
+    }
+
+    let claims: {
+      purpose: string;
+      client_id: string;
+      redirect_uri: string;
+      state: string;
+      code_challenge: string;
+      scope: string;
+    };
+    try {
+      claims = jwt.verify(ticket, config.jwtSecret) as typeof claims;
+      if (claims.purpose !== "authorize") throw new Error("wrong purpose");
+    } catch {
+      res.status(400).send("This login link expired. Please retry the connection from Claude.");
+      return;
+    }
+
+    if (isLockedOut(ip)) {
+      res.status(429).send("Too many failed login attempts. Try again in a few minutes.");
+      return;
+    }
+
+    const validUser = typeof username === "string" && safeEqual(username, config.oauthUser);
+    const validPass = typeof password === "string" && safeEqual(password, config.oauthPass);
+    if (!validUser || !validPass) {
+      recordFailedLogin(ip);
+      res.set("Content-Type", "text/html; charset=utf-8");
+      res.status(401).send(loginPage({ ticket, error: "Invalid username or password." }));
+      return;
+    }
+    clearLoginAttempts(ip);
+
+    pruneExpiredCodes();
+    const code = randomId(24);
+    authCodes.set(code, {
+      clientId: claims.client_id,
+      redirectUri: claims.redirect_uri,
+      codeChallenge: claims.code_challenge,
+      scope: claims.scope,
+      expiresAt: Date.now() + AUTH_CODE_TTL_MS,
+    });
+
+    const redirect = new URL(claims.redirect_uri);
+    redirect.searchParams.set("code", code);
+    if (claims.state) redirect.searchParams.set("state", claims.state);
+    res.redirect(302, redirect.toString());
+  });
+
+  router.post("/token", (req: Request, res: Response) => {
+    const grantType = req.body?.grant_type;
+
+    if (grantType === "authorization_code") {
+      const { code, redirect_uri, client_id, code_verifier } = req.body ?? {};
+      if (typeof code !== "string") {
+        res.status(400).json({ error: "invalid_request" });
+        return;
+      }
+      pruneExpiredCodes();
+      const entry = authCodes.get(code);
+      if (!entry || entry.expiresAt < Date.now()) {
+        res.status(400).json({ error: "invalid_grant", error_description: "Unknown or expired code" });
+        return;
+      }
+      authCodes.delete(code); // single use, regardless of outcome below
+
+      if (entry.clientId !== client_id || entry.redirectUri !== redirect_uri) {
+        res.status(400).json({ error: "invalid_grant", error_description: "client_id/redirect_uri mismatch" });
+        return;
+      }
+      if (typeof code_verifier !== "string" || !verifyPkce(code_verifier, entry.codeChallenge)) {
+        res.status(400).json({ error: "invalid_grant", error_description: "PKCE verification failed" });
+        return;
+      }
+
+      const tokens = issueTokens(entry.clientId, entry.scope);
+      res.json(tokens);
+      return;
+    }
+
+    if (grantType === "refresh_token") {
+      const { refresh_token, client_id } = req.body ?? {};
+      if (typeof refresh_token !== "string") {
+        res.status(400).json({ error: "invalid_request" });
+        return;
+      }
+      let claims: { sub: string; type: string; client_id: string; scope: string };
+      try {
+        claims = jwt.verify(refresh_token, config.jwtSecret) as typeof claims;
+        if (claims.type !== "refresh") throw new Error("wrong type");
+        if (client_id && claims.client_id !== client_id) throw new Error("client mismatch");
+      } catch {
+        res.status(400).json({ error: "invalid_grant", error_description: "Invalid or expired refresh token" });
+        return;
+      }
+      const tokens = issueTokens(claims.client_id, claims.scope);
+      res.json(tokens);
+      return;
+    }
+
+    res.status(400).json({ error: "unsupported_grant_type" });
+  });
+
+  return router;
+}
+
+function issueTokens(clientId: string, scope: string) {
+  const accessToken = jwt.sign(
+    { sub: SUBJECT, type: "access", client_id: clientId, scope },
+    config.jwtSecret,
+    { expiresIn: ACCESS_TOKEN_TTL }
+  );
+  const refreshToken = jwt.sign(
+    { sub: SUBJECT, type: "refresh", client_id: clientId, scope },
+    config.jwtSecret,
+    { expiresIn: REFRESH_TOKEN_TTL }
+  );
+  return {
+    access_token: accessToken,
+    token_type: "Bearer",
+    expires_in: 3600,
+    refresh_token: refreshToken,
+    scope,
+  };
+}
+
+/** Verify a bearer access token from the Authorization header. */
+export function verifyAccessToken(token: string): boolean {
+  try {
+    const claims = jwt.verify(token, config.jwtSecret) as { type?: string };
+    return claims.type === "access";
+  } catch {
+    return false;
+  }
+}

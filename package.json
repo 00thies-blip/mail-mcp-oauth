@@ -1,0 +1,35 @@
+{
+  "name": "mail-mcp-oauth",
+  "version": "0.1.0",
+  "description": "Self-hosted, OAuth 2.1-enabled IMAP/SMTP MCP server for Claude.ai — fork of maxx3250/claude-mail-mcp with a built-in OAuth 2.1 + DCR + PKCE layer, adapted for single-process Render deployment.",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx watch src/index.ts",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.6.1",
+    "express": "^5.0.1",
+    "imapflow": "^1.0.180",
+    "jsonwebtoken": "^9.0.2",
+    "mailparser": "^3.7.2",
+    "nodemailer": "^8.0.7",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/jsonwebtoken": "^9.0.7",
+    "@types/mailparser": "^3.4.5",
+    "@types/node": "^22.10.0",
+    "@types/nodemailer": "^7.0.11",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

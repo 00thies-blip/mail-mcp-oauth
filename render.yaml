@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: mail-mcp-oauth
+    runtime: node
+    plan: free
+    region: frankfurt
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: HOST
+        value: 0.0.0.0
+      - key: LOG_LEVEL
+        value: info
+      - key: PUBLIC_URL
+        sync: false
+      - key: ACCOUNTS_JSON
+        sync: false
+      - key: OAUTH_USER
+        sync: false
+      - key: OAUTH_PASS
+        sync: false
+      - key: JWT_SECRET
+        sync: false
