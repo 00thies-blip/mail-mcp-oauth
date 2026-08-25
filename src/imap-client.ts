@@ -179,8 +179,14 @@ export class ImapClient {
       const found = await client.search(query, { uid: true });
       const uids = Array.isArray(found) ? found : [];
       if (uids.length === 0) return [];
-      const slice = uids.slice(-Math.min(limit, 200)).reverse();
-      return await this.fetchRange(client, slice.join(","), true);
+      // Fetch in ascending UID order (what IMAP servers expect for a
+      // multi-UID FETCH range) and reverse the *result array* afterward for
+      // newest-first display — mirrors listMessages below. Passing a
+      // pre-reversed/descending UID list straight into fetch() produced
+      // duplicate entries with null fields in testing.
+      const slice = uids.slice(-Math.min(limit, 200));
+      const results = await this.fetchRange(client, slice.join(","), true);
+      return results.reverse();
     } finally {
       lock.release();
     }
