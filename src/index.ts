@@ -26,6 +26,7 @@ import { AccountsStore } from "./accounts.js";
 import { ClientPool } from "./client-pool.js";
 import { registerMailTools } from "./tools-mail.js";
 import { buildOAuthRouter, verifyAccessToken } from "./oauth.js";
+import { BrevoClient } from "./brevo-client.js";
 
 const VERSION = "0.1.0";
 
@@ -105,11 +106,14 @@ async function main(): Promise<void> {
     ids: store.ids(),
   });
 
+  const brevo = config.brevoApiKey ? new BrevoClient(config.brevoApiKey) : null;
+  log("info", "send path", { mode: brevo ? "brevo-api" : "direct-smtp" });
+
   const mcp = new McpServer({
     name: "claude-mail-mcp",
     version: VERSION,
   });
-  registerMailTools(mcp, pool, store);
+  registerMailTools(mcp, pool, store, brevo);
 
   const app = express();
   app.disable("x-powered-by");

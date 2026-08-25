@@ -13,6 +13,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { ClientPool } from "./client-pool.js";
 import { AccountsStore } from "./accounts.js";
+import { BrevoClient } from "./brevo-client.js";
 
 function asJson(value: unknown): { content: { type: "text"; text: string }[] } {
   return {
@@ -22,6 +23,17 @@ function asJson(value: unknown): { content: { type: "text"; text: string }[] } {
         text: JSON.stringify(value, null, 2),
       },
     ],
+  };
+}
+
+function resolveFromAddress(
+  store: AccountsStore,
+  accountId?: string
+): { email: string; name?: string } {
+  const account = store.resolve(accountId);
+  return {
+    email: account.mail.defaultFrom,
+    name: account.mail.defaultFromName || undefined,
   };
 }
 
@@ -37,7 +49,8 @@ const accountSchema = z
 export function registerMailTools(
   server: McpServer,
   pool: ClientPool,
-  store: AccountsStore
+  store: AccountsStore,
+  brevo: BrevoClient | null
 ): void {
   server.registerTool(
     "list_accounts",
@@ -211,7 +224,7 @@ export function registerMailTools(
         throw new Error("Provide at least one of `text` or `html`.");
       }
       const { smtp, imap, sentFolder } = pool.for(args.account);
-      const result = await smtp.send({
+      const outgoing = {
         to: args.to,
         cc: args.cc,
         bcc: args.bcc,
@@ -226,27 +239,15 @@ export function registerMailTools(
           contentBase64: a.content_base64,
           contentType: a.content_type,
         })),
-      });
+      };
+      const result = brevo
+        ? await brevo.send(outgoing, resolveFromAddress(store, args.account))
+        : await smtp.send(outgoing);
       // Best-effort copy to Sent folder.
       let savedToSent = false;
       if (sentFolder) {
         try {
-          const raw = await smtp.buildRawSource({
-            to: args.to,
-            cc: args.cc,
-            bcc: args.bcc,
-            subject: args.subject,
-            text: args.text,
-            html: args.html,
-            replyTo: args.reply_to,
-            inReplyTo: args.in_reply_to,
-            references: args.references,
-            attachments: args.attachments?.map((a) => ({
-              filename: a.filename,
-              contentBase64: a.content_base64,
-              contentType: a.content_type,
-            })),
-          });
+          const raw = await smtp.buildRawSource(outgoing);
           await imap.append(sentFolder, raw, ["\\Seen"]);
           savedToSent = true;
         } catch {

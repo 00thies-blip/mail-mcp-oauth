@@ -59,6 +59,15 @@ export const config = {
   // Symmetric signing secret for issued access/refresh tokens (JWT HS256).
   // Generate with: openssl rand -hex 32
   jwtSecret: required("JWT_SECRET"),
+
+  /**
+   * Optional: Brevo API key for send_message. Render's free tier blocks
+   * outbound SMTP ports entirely, so direct SMTP sending never connects
+   * regardless of mail provider — set this to route sending over Brevo's
+   * HTTPS API instead. Leave unset on hosts where raw SMTP egress works
+   * (e.g. a VPS) to send directly as before. See docs/ACCOUNTS.md.
+   */
+  brevoApiKey: optional("BREVO_API_KEY", ""),
 } as const;
 
 export type Config = typeof config;
