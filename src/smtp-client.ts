@@ -5,7 +5,9 @@
  * source so the IMAP client can APPEND it to the Drafts folder.
  */
 
-import nodemailer, { Transporter, SendMailOptions } from "nodemailer";
+import { promises as dns } from "node:dns";
+import net from "node:net";
+import nodemailer, { SendMailOptions } from "nodemailer";
 
 export interface SmtpAuth {
   host: string;
@@ -45,28 +47,44 @@ export interface SendResult {
 }
 
 export class SmtpClient {
-  private readonly transporter: Transporter;
+  private readonly auth: SmtpAuth;
   private readonly defaults: SmtpDefaults;
 
   constructor(auth: SmtpAuth, defaults: SmtpDefaults) {
-    this.transporter = nodemailer.createTransport({
-      host: auth.host,
-      port: auth.port,
-      secure: auth.secure,
-      auth: { user: auth.user, pass: auth.pass },
-    });
+    this.auth = auth;
     this.defaults = defaults;
   }
 
   async send(msg: OutgoingMessage): Promise<SendResult> {
     const mail = this.toMailOptions(msg);
-    const info = await this.transporter.sendMail(mail);
+    const transporter = await this.buildTransporter();
+    const info = await transporter.sendMail(mail);
     return {
       messageId: info.messageId,
       accepted: (info.accepted ?? []).map(String),
       rejected: (info.rejected ?? []).map(String),
       response: info.response,
     };
+  }
+
+  /**
+   * nodemailer resolves both A and AAAA records for a hostname and then
+   * picks *at random* between them (see its shared/formatDNSValue) — on a
+   * host with no IPv6 route (Render) that fails ~50% of the time with
+   * ENETUNREACH even though a working IPv4 address exists. Resolve to a
+   * concrete IPv4 address ourselves and connect to that directly, which
+   * bypasses nodemailer's resolver/picker entirely. TLS servername has to
+   * be set explicitly since we're now connecting to an IP, not a name.
+   */
+  private async buildTransporter() {
+    const host = net.isIP(this.auth.host) ? this.auth.host : await resolveIPv4(this.auth.host);
+    return nodemailer.createTransport({
+      host,
+      port: this.auth.port,
+      secure: this.auth.secure,
+      auth: { user: this.auth.user, pass: this.auth.pass },
+      tls: { servername: this.auth.host },
+    });
   }
 
   /**
@@ -114,4 +132,17 @@ export class SmtpClient {
     }
     return opts;
   }
+}
+
+async function resolveIPv4(hostname: string): Promise<string> {
+  try {
+    const addresses = await dns.resolve4(hostname);
+    if (addresses.length > 0) {
+      return addresses[Math.floor(Math.random() * addresses.length)];
+    }
+  } catch {
+    // fall through to dns.lookup below
+  }
+  const { address } = await dns.lookup(hostname, { family: 4 });
+  return address;
 }
