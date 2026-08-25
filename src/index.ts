@@ -16,6 +16,7 @@
  * for why that's safe (stateless JWTs, in-memory DCR/codes).
  */
 
+import { setDefaultResultOrder } from "node:dns";
 import express, { NextFunction, Request, Response } from "express";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -76,6 +77,12 @@ function securityHeaders(_req: Request, res: Response, next: NextFunction): void
 }
 
 async function main(): Promise<void> {
+  // Render's outbound network has no working IPv6 route, but plenty of
+  // mail providers (Netcup among them) publish AAAA records. Node prefers
+  // IPv6 by default when both exist, which surfaces as ENETUNREACH on
+  // every IMAP/SMTP connection attempt. Prefer IPv4 results process-wide.
+  setDefaultResultOrder("ipv4first");
+
   const store = new AccountsStore(
     config.accountsFile || null,
     config.accountsJson || null
