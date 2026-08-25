@@ -20,7 +20,7 @@
     "imapflow": "^1.0.180",
     "jsonwebtoken": "^9.0.2",
     "mailparser": "^3.7.2",
-    "nodemailer": "^8.0.7",
+    "nodemailer": "^9.0.5",
     "zod": "^3.23.8"
   },
   "devDependencies": {
