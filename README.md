@@ -25,12 +25,20 @@ optional `account` parameter to pick which mailbox to act on.
   works for local/VPS use.
 - **CalDAV/calendar tools removed** — not needed for this deployment, cuts
   the dependency surface (`tsdav`, `ical.js`).
-- **Sending via Brevo's HTTP API, not direct SMTP** ([src/brevo-client.ts](src/brevo-client.ts)):
-  Render's free tier blocks all outbound traffic to SMTP ports (25/465/587)
-  — confirmed against three different mail providers, not fixable from our
-  side. `send_message` routes through Brevo (HTTPS, not blocked) when
-  `BREVO_API_KEY` is set; falls back to direct SMTP otherwise. IMAP is
-  unaffected. See [docs/ACCOUNTS.md](docs/ACCOUNTS.md#sending-brevo-instead-of-direct-smtp).
+- **Sending via HTTP APIs, not direct SMTP**: Render's free tier blocks
+  all outbound traffic to SMTP ports (25/465/587) — confirmed against
+  four different mailboxes across three providers, not fixable from our
+  side. `send_message` picks, per account: the **Gmail API**
+  ([src/gmail-client.ts](src/gmail-client.ts)) for any Google-hosted
+  address (the only way to authenticate as a domain you don't control
+  DNS for), else **Brevo**'s HTTP API
+  ([src/brevo-client.ts](src/brevo-client.ts)) if `BREVO_API_KEY` is set,
+  else direct SMTP. IMAP is unaffected regardless. See
+  [docs/ACCOUNTS.md](docs/ACCOUNTS.md#sending-brevo-or-gmail-api-instead-of-direct-smtp).
+- **Google OAuth2** ([src/google-oauth.ts](src/google-oauth.ts)): XOAUTH2
+  for IMAP + Gmail API for sending, for Gmail personal and Google
+  Workspace mailboxes (the latter needs it for IMAP too — app passwords
+  disabled by admin policy, no password path exists at all).
 
 ## Architecture
 
@@ -43,8 +51,8 @@ Render (TLS terminated automatically, custom domain mcp-mail.<domain>)
 this process (single Node service)
     ├── /.well-known/oauth-authorization-server, /register, /authorize, /token   (src/oauth.ts)
     ├── /mcp  (Bearer-gated MCP Streamable HTTP transport)
-    │     ├── ImapClient   ──▶ imapflow      ──▶ IMAP server (993/143) per account
-    │     └── send_message ──▶ Brevo HTTPS API  (SMTP ports blocked on Render free tier)
+    │     ├── ImapClient   ──▶ imapflow ──▶ IMAP server (993) per account, XOAUTH2 or password
+    │     └── send_message ──▶ Gmail API (Google accounts) or Brevo HTTPS API (SMTP ports blocked on Render free tier)
     └── /health
 ```
 
@@ -68,10 +76,10 @@ Claude.ai).
 ## Accounts
 
 See [docs/ACCOUNTS.md](docs/ACCOUNTS.md) for the `accounts.json` schema,
-per-provider setup (Gmail app passwords, Netcup Webhosting IMAP/SMTP), why
-Google Workspace/Hotmail need a separate OAuth2 flow (not yet implemented),
-and the Brevo sender-domain-authentication steps needed for `send_message`
-to show the real address instead of a `brevosend.com` substitute.
+per-provider setup (Gmail app passwords, Netcup Webhosting IMAP/SMTP,
+Google OAuth2 for Gmail + Workspace), the Brevo sender-domain-
+authentication steps for non-Google domains, and why Hotmail is currently
+blocked on a Microsoft-side issue rather than anything in this repo.
 
 ## Tools exposed to Claude
 
@@ -82,7 +90,7 @@ to show the real address instead of a `brevosend.com` substitute.
 | `list_messages` | Newest N messages in a folder |
 | `search_messages` | Server-side IMAP search |
 | `get_message` | Full body + headers + attachment metadata |
-| `send_message` | Send via SMTP (optionally copies to Sent) |
+| `send_message` | Send (Gmail API / Brevo / SMTP depending on account, optionally copies to Sent) |
 | `create_draft` | Build RFC-822 and APPEND to Drafts |
 | `mark_read` | Toggle `\Seen` |
 | `move_message` | Move between folders |
