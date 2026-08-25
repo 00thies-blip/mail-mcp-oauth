@@ -135,14 +135,11 @@ export class SmtpClient {
 }
 
 async function resolveIPv4(hostname: string): Promise<string> {
-  try {
-    const addresses = await dns.resolve4(hostname);
-    if (addresses.length > 0) {
-      return addresses[Math.floor(Math.random() * addresses.length)];
-    }
-  } catch {
-    // fall through to dns.lookup below
-  }
+  // dns.resolve4()/resolve6() (c-ares, raw UDP to the configured
+  // nameserver) hangs on Render's network long enough to blow through
+  // nodemailer's connection timeout before ever reaching the TCP connect
+  // step. dns.lookup() (getaddrinfo, the OS resolver) is what ImapFlow
+  // already uses successfully on the same network — use the same path.
   const { address } = await dns.lookup(hostname, { family: 4 });
   return address;
 }
