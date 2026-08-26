@@ -31,8 +31,15 @@ import jwt from "jsonwebtoken";
 import { config } from "./config.js";
 
 const AUTH_CODE_TTL_MS = 2 * 60 * 1000; // 2 minutes
-const ACCESS_TOKEN_TTL = "1h";
-const REFRESH_TOKEN_TTL = "180d";
+// A 1h access token forced Claude.ai to redo the full browser /authorize
+// login on every expiry instead of silently using the refresh token —
+// annoying for a personal single-user connector where the login itself
+// gates nothing more than this same JWT_SECRET already does. Long-lived
+// bearer tokens are an acceptable tradeoff here: revocation is "rotate
+// JWT_SECRET", which invalidates every outstanding token at once.
+const ACCESS_TOKEN_TTL = "90d";
+const ACCESS_TOKEN_TTL_SECONDS = 90 * 24 * 60 * 60;
+const REFRESH_TOKEN_TTL = "365d";
 const TICKET_TTL = "10m";
 const SUBJECT = "lukasthies";
 
@@ -423,7 +430,7 @@ function issueTokens(clientId: string, scope: string) {
   return {
     access_token: accessToken,
     token_type: "Bearer",
-    expires_in: 3600,
+    expires_in: ACCESS_TOKEN_TTL_SECONDS,
     refresh_token: refreshToken,
     scope,
   };
