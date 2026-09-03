@@ -32,7 +32,7 @@ jobs:
         run: |
           for i in 1 2 3 4 5; do
             code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 60 \
-              "${KEEPWARM_URL:-https://mcp-mail.lukasthies.com/health}") || code=000
+              "${KEEPWARM_URL:-https://mail-mcp-oauth.onrender.com/health}") || code=000
             echo "attempt $i -> HTTP $code"
             if [ "$code" = "200" ]; then exit 0; fi
             sleep 20
@@ -40,6 +40,9 @@ jobs:
           echo "health check never returned 200" >&2
           exit 1
         env:
-          # Override in repo Settings -> Secrets and variables -> Actions
-          # -> Variables if the public URL ever changes.
+          # Optional override. The default above is the live service URL
+          # (matches PUBLIC_URL on Render). Only set a repo Actions
+          # Variable named KEEPWARM_URL if that ever changes — and if you
+          # do, point it at the .onrender.com host, NOT the custom domain
+          # mcp-mail.lukasthies.com (that domain is not wired up).
           KEEPWARM_URL: ${{ vars.KEEPWARM_URL }}

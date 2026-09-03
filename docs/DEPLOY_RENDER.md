@@ -144,11 +144,21 @@ instance not to cold-start at all:
 - **Best:** upgrade the Render service to **Starter ($7/mo)** — no
   sleep, no cold starts.
 - **Free stopgap:** the committed `.github/workflows/keepwarm.yml` pings
-  `/health` every ~10 min. After pushing, set repo **Settings → Secrets
-  and variables → Actions → Variables → New variable**:
-  `KEEPWARM_URL = https://mcp-mail.lukasthies.com/health`. Enable
-  workflows if the repo prompts. GitHub cron is best-effort (10-20 min in
-  practice) and auto-disables after 60 days of repo inactivity.
+  `/health` every ~10 min. It defaults to
+  `https://mail-mcp-oauth.onrender.com/health` (the live service — this
+  is what `PUBLIC_URL` is set to), so **no repo variable is needed**.
+  Only add an Actions Variable `KEEPWARM_URL` if the host changes, and
+  point it at the `.onrender.com` URL — **not** the custom domain
+  `mcp-mail.lukasthies.com`, which was never finished (Render domain
+  verification stayed stuck; see step 4 note). GitHub cron is
+  best-effort (10-20 min in practice) and auto-disables after 60 days of
+  repo inactivity.
+
+> **Which URL is live:** `https://mail-mcp-oauth.onrender.com`. The
+> Claude.ai connector must be `https://mail-mcp-oauth.onrender.com/mcp`.
+> `https://mcp-mail.lukasthies.com/...` does **not** resolve to this
+> service — don't use it anywhere until the custom domain is actually
+> verified in Render and `PUBLIC_URL` is switched over.
 
 ## Known issues found during live testing (fixed)
 
