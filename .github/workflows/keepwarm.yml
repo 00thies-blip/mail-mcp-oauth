@@ -1,0 +1,45 @@
+# Keep the Render free-tier instance from going to sleep.
+#
+# Render free web services stop after ~15 min of no inbound traffic and
+# then cold-start (~50s, often 502s first) on the next request. Those
+# cold starts are what make Claude.ai drop the connector and re-run the
+# OAuth login. Pinging /health on a schedule keeps the instance warm
+# during the parts of the day this matters.
+#
+# Notes / limits:
+#   - GitHub cron is best-effort; a "*/10" schedule realistically fires
+#     every 10-20 min under load. Good enough to avoid most cold starts,
+#     not a hard guarantee.
+#   - GitHub disables scheduled workflows after 60 days with no repo
+#     activity. A single commit re-arms it.
+#   - A Render free service running 24/7 uses ~730 of the 750 free
+#     instance-hours/month, so this stays within the free allowance.
+#   - The real fix for zero cold starts is Render's Starter plan ($7/mo),
+#     which has no sleep. This workflow is the free-tier stopgap.
+
+name: keep-warm
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: curl /health
+        run: |
+          for i in 1 2 3 4 5; do
+            code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 60 \
+              "${KEEPWARM_URL:-https://mcp-mail.lukasthies.com/health}") || code=000
+            echo "attempt $i -> HTTP $code"
+            if [ "$code" = "200" ]; then exit 0; fi
+            sleep 20
+          done
+          echo "health check never returned 200" >&2
+          exit 1
+        env:
+          # Override in repo Settings -> Secrets and variables -> Actions
+          # -> Variables if the public URL ever changes.
+          KEEPWARM_URL: ${{ vars.KEEPWARM_URL }}

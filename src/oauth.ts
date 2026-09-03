@@ -40,10 +40,29 @@ const AUTH_CODE_TTL_MS = 2 * 60 * 1000; // 2 minutes
 // connected. Revocation is "rotate JWT_SECRET", which invalidates every
 // outstanding token at once.
 const ACCESS_TOKEN_TTL = "3650d";
-const ACCESS_TOKEN_TTL_SECONDS = 3650 * 24 * 60 * 60;
 const REFRESH_TOKEN_TTL = "3650d";
 const TICKET_TTL = "10m";
 const SUBJECT = "lukasthies";
+
+// Some OAuth clients sanity-check or clamp an implausibly large
+// `expires_in` (10 years ≈ 3.15e8 s). Report one year — the access token
+// JWT still carries the real 10-year `exp`, this just tells Claude.ai to
+// run its silent background refresh sometime within the year instead of
+// treating the value as bogus.
+const ACCESS_TOKEN_EXPIRES_IN = 365 * 24 * 60 * 60;
+
+// Persistent "stay signed in" browser session. Render's free tier sleeps
+// the service after 15 min idle and cold-starts it on the next hit;
+// Claude.ai also re-validates the connector on its own schedule. Either
+// way it re-runs the browser /authorize flow. Without a session this
+// means retyping the login every single day. This signed, HttpOnly,
+// Secure cookie is set once on a successful login and then lets every
+// later /authorize complete silently (popup opens and closes itself).
+// Same 10-year horizon and same revocation story as the tokens: rotate
+// JWT_SECRET to invalidate everything at once.
+const SESSION_COOKIE = "mcp_session";
+const SESSION_TTL = "3650d";
+const SESSION_TTL_MS = 3650 * 24 * 60 * 60 * 1000;
 
 interface RegisteredClient {
   clientId: string;
@@ -125,6 +144,109 @@ function safeEqual(a: string, b: string): boolean {
   const bufB = Buffer.from(b);
   if (bufA.length !== bufB.length) return false;
   return timingSafeEqual(bufA, bufB);
+}
+
+// --- stateless OAuth client registry ---------------------------------
+//
+// Render's free tier has no persistent disk and cold-starts the process
+// on the first request after it goes idle, wiping the in-memory `clients`
+// map. If client registrations only lived there, every cold start forced
+// Claude.ai to re-register AND re-run the full browser login. Instead the
+// client_id issued by /register is itself a signed JWT carrying the
+// registration, so it verifies after any restart with no state. The
+// in-memory map is kept only as a fast path / for nicer logs.
+
+interface ClientClaims {
+  t: "client";
+  ru: string[];
+  cn: string;
+}
+
+function makeClientId(redirectUris: string[], clientName: string): string {
+  // No expiry — a DCR registration is meant to be durable.
+  return jwt.sign(
+    { t: "client", ru: redirectUris, cn: clientName } satisfies ClientClaims,
+    config.jwtSecret
+  );
+}
+
+function resolveClient(
+  clientId: string
+): { redirectUris: string[]; clientName: string } | null {
+  const mem = clients.get(clientId);
+  if (mem) return { redirectUris: mem.redirectUris, clientName: mem.clientName };
+  try {
+    const c = jwt.verify(clientId, config.jwtSecret) as Partial<ClientClaims>;
+    if (c.t !== "client" || !Array.isArray(c.ru) || c.ru.length === 0) return null;
+    if (!c.ru.every((u) => typeof u === "string")) return null;
+    return { redirectUris: c.ru, clientName: typeof c.cn === "string" ? c.cn : "MCP client" };
+  } catch {
+    return null;
+  }
+}
+
+// --- persistent browser session ("stay signed in") ------------------
+
+function parseCookies(header: string | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!header) return out;
+  for (const part of header.split(";")) {
+    const eq = part.indexOf("=");
+    if (eq === -1) continue;
+    const key = part.slice(0, eq).trim();
+    if (!key) continue;
+    out[key] = decodeURIComponent(part.slice(eq + 1).trim());
+  }
+  return out;
+}
+
+function hasValidSession(req: Request): boolean {
+  const token = parseCookies(req.header("cookie"))[SESSION_COOKIE];
+  if (!token) return false;
+  try {
+    const claims = jwt.verify(token, config.jwtSecret) as { purpose?: string };
+    return claims.purpose === "session";
+  } catch {
+    return false;
+  }
+}
+
+function setSessionCookie(res: Response): void {
+  const token = jwt.sign(
+    { purpose: "session", sub: SUBJECT },
+    config.jwtSecret,
+    { expiresIn: SESSION_TTL }
+  );
+  res.cookie(SESSION_COOKIE, token, {
+    httpOnly: true,
+    secure: true,
+    sameSite: "lax",
+    maxAge: SESSION_TTL_MS,
+    path: "/",
+  });
+}
+
+/** Mint + store a single-use auth code and return the 302 target. */
+function issueAuthCode(params: {
+  clientId: string;
+  redirectUri: string;
+  codeChallenge: string;
+  scope: string;
+  state: string;
+}): string {
+  pruneExpiredCodes();
+  const code = randomId(24);
+  authCodes.set(code, {
+    clientId: params.clientId,
+    redirectUri: params.redirectUri,
+    codeChallenge: params.codeChallenge,
+    scope: params.scope,
+    expiresAt: Date.now() + AUTH_CODE_TTL_MS,
+  });
+  const redirect = new URL(params.redirectUri);
+  redirect.searchParams.set("code", code);
+  if (params.state) redirect.searchParams.set("state", params.state);
+  return redirect.toString();
 }
 
 function html(strings: TemplateStringsArray, ...values: string[]): string {
@@ -217,8 +339,10 @@ export function buildOAuthRouter(): Router {
       }
     }
 
-    const clientId = randomId();
     const clientName = typeof body.client_name === "string" ? body.client_name.slice(0, 200) : "MCP client";
+    // Signed, self-describing client_id — verifies after any cold start
+    // without a lookup, so Claude.ai never has to re-register.
+    const clientId = makeClientId(redirectUris, clientName);
     clients.set(clientId, {
       clientId,
       redirectUris,
@@ -266,7 +390,7 @@ export function buildOAuthRouter(): Router {
       res.status(400).send("Missing client_id or redirect_uri.");
       return;
     }
-    const client = clients.get(client_id);
+    const client = resolveClient(client_id);
     if (!client || !client.redirectUris.includes(redirect_uri)) {
       console.error(
         JSON.stringify({
@@ -277,7 +401,6 @@ export function buildOAuthRouter(): Router {
           received_redirect_uri: redirect_uri,
           client_found: Boolean(client),
           client_registered_redirect_uris: client?.redirectUris ?? null,
-          known_client_ids: Array.from(clients.keys()),
         })
       );
       res.status(400).send("Unknown client_id or redirect_uri not registered for this client.");
@@ -288,14 +411,34 @@ export function buildOAuthRouter(): Router {
       return;
     }
 
+    const scopeStr = typeof scope === "string" ? scope : "mcp";
+    const stateStr = typeof state === "string" ? state : "";
+
+    // Already signed in on this browser? Complete the flow silently — no
+    // login page. This is what stops the daily re-login: Claude.ai
+    // re-runs /authorize on its own schedule and after every Render cold
+    // start, and without this each one is a manual prompt.
+    if (hasValidSession(req)) {
+      setSessionCookie(res); // slide the 10-year window forward
+      const target = issueAuthCode({
+        clientId: client_id,
+        redirectUri: redirect_uri,
+        codeChallenge: code_challenge,
+        scope: scopeStr,
+        state: stateStr,
+      });
+      res.redirect(302, target);
+      return;
+    }
+
     const ticket = jwt.sign(
       {
         purpose: "authorize",
         client_id,
         redirect_uri,
-        state: typeof state === "string" ? state : "",
+        state: stateStr,
         code_challenge,
-        scope: typeof scope === "string" ? scope : "mcp",
+        scope: scopeStr,
       },
       config.jwtSecret,
       { expiresIn: TICKET_TTL }
@@ -345,20 +488,18 @@ export function buildOAuthRouter(): Router {
     }
     clearLoginAttempts(ip);
 
-    pruneExpiredCodes();
-    const code = randomId(24);
-    authCodes.set(code, {
+    // Remember this browser so future /authorize round-trips (Claude.ai
+    // re-validation, Render cold starts) complete without a login prompt.
+    setSessionCookie(res);
+
+    const target = issueAuthCode({
       clientId: claims.client_id,
       redirectUri: claims.redirect_uri,
       codeChallenge: claims.code_challenge,
       scope: claims.scope,
-      expiresAt: Date.now() + AUTH_CODE_TTL_MS,
+      state: claims.state,
     });
-
-    const redirect = new URL(claims.redirect_uri);
-    redirect.searchParams.set("code", code);
-    if (claims.state) redirect.searchParams.set("state", claims.state);
-    res.redirect(302, redirect.toString());
+    res.redirect(302, target);
   });
 
   router.post("/token", (req: Request, res: Response) => {
@@ -432,7 +573,7 @@ function issueTokens(clientId: string, scope: string) {
   return {
     access_token: accessToken,
     token_type: "Bearer",
-    expires_in: ACCESS_TOKEN_TTL_SECONDS,
+    expires_in: ACCESS_TOKEN_EXPIRES_IN,
     refresh_token: refreshToken,
     scope,
   };

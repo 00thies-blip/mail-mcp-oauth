@@ -16,10 +16,15 @@ optional `account` parameter to pick which mailbox to act on.
   `/authorize` (PKCE + single-user login form), `/token`. No separate OAuth
   shim process — upstream references one but it isn't published, so this
   fork implements it directly in the same Express app.
-- **Stateless by design**: access/refresh tokens are signed JWTs (no DB);
-  registered OAuth clients and in-flight auth codes are in-memory (a
-  restart just makes Claude.ai silently re-register, which its MCP client
-  already handles).
+- **Stateless by design**: access/refresh tokens are signed JWTs (no DB).
+  DCR client registrations are also signed JWTs (the `client_id` carries
+  its own registration), so a restart needs no re-registration. In-flight
+  auth codes are the only in-memory state, and they live 2 minutes.
+- **Persistent login**: a successful `/authorize` sets a signed, 10-year
+  `mcp_session` cookie, so later re-authorizations (Claude.ai re-checks
+  periodically; Render free cold-starts trigger one) complete silently
+  with no login prompt. Revoke by rotating `JWT_SECRET`. See
+  [docs/DEPLOY_RENDER.md](docs/DEPLOY_RENDER.md#persistent-login-no-more-daily-re-auth).
 - **Accounts from an env var**: `ACCOUNTS_JSON` instead of a file on disk,
   since Render's filesystem is ephemeral. File-based `ACCOUNTS_FILE` still
   works for local/VPS use.

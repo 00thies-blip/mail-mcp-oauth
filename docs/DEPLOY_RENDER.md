@@ -101,12 +101,63 @@ curl https://mcp-mail.lukasthies.com/health
 - [x] `create_draft`, `mark_read` — pure IMAP, unaffected by the SMTP block
 - [x] Unauthenticated `POST /mcp` returns 401 with a `WWW-Authenticate` header
 - [ ] `move_message` / `delete_message`
-- [ ] Re-open the connector in a new Claude.ai session after the Render free
-      instance goes idle — confirms cold start + re-auth work
+- [x] Re-open the connector in a new Claude.ai session after the Render free
+      instance goes idle — confirms cold start + re-auth work. **This was
+      the daily-re-login bug**; see "Persistent login" below and the
+      "Known issues" entry.
 - [ ] Switch `PUBLIC_URL` + connector URL from `*.onrender.com` to the
       custom domain once Render's verification actually goes green
 
+## Persistent login (no more daily re-auth)
+
+The connector used to demand a fresh browser login roughly once a day.
+Two causes, both fixed in `src/oauth.ts`:
+
+1. **In-memory client registry + Render cold starts.** Render free sleeps
+   the service after ~15 min idle and cold-starts it on the next request.
+   That wiped the DCR client registry, so Claude.ai's stored `client_id`
+   stopped being recognised and it was forced through the full browser
+   `/authorize` flow again. Fixed by making the `client_id` a signed JWT
+   that carries its own registration — it verifies after any restart with
+   no server-side state.
+2. **`/authorize` always showed the login form.** No session, no cookie,
+   so every re-authorize meant retyping the password. Fixed with a
+   signed, HttpOnly, Secure, 10-year `mcp_session` cookie set on the
+   first successful login. After that, every `/authorize` (Claude.ai
+   re-validates on its own schedule, plus every cold start) completes
+   silently — the OAuth popup opens and closes with no prompt.
+
+Revocation is unchanged: rotate `JWT_SECRET` in the Render dashboard and
+every outstanding token **and** the session cookie become invalid at
+once, forcing one fresh login.
+
+**`JWT_SECRET` must stay constant** across deploys for any of this to
+work — it's already `sync: false` in `render.yaml` (set once in the
+dashboard, never regenerated). If you ever "rotate secrets" on Render,
+expect exactly one re-login afterwards.
+
+### Stopping the cold starts too
+
+The fixes above make re-auth silent, but the cleanest outcome is for the
+instance not to cold-start at all:
+
+- **Best:** upgrade the Render service to **Starter ($7/mo)** — no
+  sleep, no cold starts.
+- **Free stopgap:** the committed `.github/workflows/keepwarm.yml` pings
+  `/health` every ~10 min. After pushing, set repo **Settings → Secrets
+  and variables → Actions → Variables → New variable**:
+  `KEEPWARM_URL = https://mcp-mail.lukasthies.com/health`. Enable
+  workflows if the repo prompts. GitHub cron is best-effort (10-20 min in
+  practice) and auto-disables after 60 days of repo inactivity.
+
 ## Known issues found during live testing (fixed)
+
+- **Manual browser re-login every day** — see "Persistent login" above.
+  Root cause was the in-memory DCR registry not surviving Render free
+  cold starts, compounded by `/authorize` having no persistent session.
+  Fixed by a self-describing signed `client_id` plus a 10-year signed
+  `mcp_session` cookie that makes subsequent `/authorize` round-trips
+  silent.
 
 - **`npm ci` failing on first deploy** — no `package-lock.json` was
   committed (never had local Node access to generate one until later in
