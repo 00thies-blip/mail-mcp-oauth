@@ -1,0 +1,23 @@
+name = "mail-mcp-spike"
+main = "src/index.ts"
+compatibility_date = "2026-09-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Go/No-Go spike ONLY -- not the real connector. No OAuth 2.1 layer here
+# (that's Phase 1, ported from mail-mcp-oauth's src/oauth.ts using `jose`
+# the same way wordpress-mcp-cloudflare did). /mcp is gated by a single
+# shared-secret bearer token (SPIKE_TOKEN) instead, purely so this
+# throwaway endpoint doesn't sit on workers.dev with live IMAP creds
+# behind zero auth while it's up.
+#
+# Secrets (never in this file -- set with `wrangler secret put <NAME>`):
+#   SPIKE_TOKEN    shared bearer token gating POST /mcp
+#   ACCOUNTS_JSON  same schema as the Render version's ACCOUNTS_JSON,
+#                  minus smtp/mail (read-only spike): version 1,
+#                  accounts[].{id,label,default,imap{host,port,user,pass},google?}
+#                  Use ONE Google account (imap.pass="" + google block, tests
+#                  XOAUTH2) and ONE Netcup-style account (imap.pass set,
+#                  tests plain-password auth) to cover both auth paths.
+
+[vars]
+LOG_LEVEL = "info"
