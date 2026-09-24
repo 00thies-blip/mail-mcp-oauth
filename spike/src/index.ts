@@ -118,6 +118,56 @@ app.all("/mcp", async (c) => {
   return transport.handleRequest(c);
 });
 
+// Browser-friendly diagnostic route: GET, no JSON-RPC envelope, so it can be
+// opened directly in a browser tab instead of needing curl/Postman for the
+// Phase 0 connectivity check. Same SPIKE_TOKEN gate as /mcp, passed as a
+// query param here since a browser URL bar can't set headers.
+app.get("/debug/:tool", async (c) => {
+  const expected = c.env.SPIKE_TOKEN;
+  const token = c.req.query("token");
+  if (typeof expected !== "string" || expected.length === 0 || !token || !timingSafeEqual(token, expected)) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+
+  const tool = c.req.param("tool");
+  const account = c.req.query("account") ?? undefined;
+  const mailbox = c.req.query("mailbox") ?? "INBOX";
+  const limit = Number(c.req.query("limit") ?? "5");
+
+  const started = Date.now();
+  try {
+    const accounts = parseAccounts(c.env.ACCOUNTS_JSON);
+    const acc = resolveAccount(accounts, account);
+    const imap = new ImapClient({
+      host: acc.imap.host,
+      port: acc.imap.port,
+      user: acc.imap.user,
+      pass: acc.imap.pass,
+      secure: acc.imap.tls,
+      accessTokenProvider: acc.google && acc.imap.pass === "" ? () => getGoogleAccessToken(acc.google!) : undefined,
+    });
+    await imap.connect();
+    try {
+      let result: unknown;
+      if (tool === "list_folders") {
+        result = await imap.listMailboxes();
+      } else if (tool === "list_messages") {
+        result = await imap.listMessages(mailbox, limit);
+      } else {
+        return c.json({ error: "unknown_tool", tool, available: ["list_folders", "list_messages"] }, 404);
+      }
+      return c.json({ ok: true, tool, account: account ?? acc.id, tookMs: Date.now() - started, result });
+    } finally {
+      await imap.close();
+    }
+  } catch (err) {
+    return c.json(
+      { ok: false, tool, tookMs: Date.now() - started, error: err instanceof Error ? err.message : String(err) },
+      502
+    );
+  }
+});
+
 app.notFound((c) => c.json({ error: "not_found", message: `${c.req.method} ${c.req.path} is not a valid endpoint.` }, 404));
 
 export default app;
