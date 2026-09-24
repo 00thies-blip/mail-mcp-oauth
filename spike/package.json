@@ -1,0 +1,30 @@
+{
+  "name": "mail-mcp-spike",
+  "version": "0.0.1",
+  "description": "Phase 0 Go/No-Go spike: mail-mcp-oauth on Cloudflare Workers Free. list_folders + list_messages(5) via imapflow, Hono + MCP SDK Streamable HTTP. Throwaway -- superseded by the full port if Go.",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "dry-run": "wrangler deploy --dry-run --outdir=dist",
+    "typecheck": "tsc --noEmit",
+    "bench": "node scripts/bench.mjs"
+  },
+  "dependencies": {
+    "@hono/mcp": "^0.3.2",
+    "@modelcontextprotocol/sdk": "^1.30.1",
+    "hono": "^4.6.14",
+    "imapflow": "^1.0.180",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20250101.0",
+    "typescript": "^5.7.2",
+    "wrangler": "^4.0.0"
+  }
+}
