@@ -42,6 +42,30 @@ export interface MessageSummary {
   size: number | null;
 }
 
+/**
+ * imapflow's own connectionTimeout (default 90s) did not reliably abort a
+ * stuck connect() when tested live on Workers -- a call to a real IMAP
+ * host hung well past 90s with no error surfacing. Wrap connect() in an
+ * independent timeout that does not depend on imapflow's internal timer
+ * firing correctly under this runtime, so a stuck TCP/TLS handshake fails
+ * fast and visibly instead of hanging the request indefinitely.
+ */
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), ms);
+    promise.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      }
+    );
+  });
+}
+
 export class ImapClient {
   private client: ImapFlow | null = null;
 
@@ -57,8 +81,10 @@ export class ImapClient {
       secure: this.auth.secure,
       auth,
       logger: false,
+      connectionTimeout: 8000,
+      greetingTimeout: 8000,
     });
-    await client.connect();
+    await withTimeout(client.connect(), 10000, `IMAP connect to ${this.auth.host}:${this.auth.port} timed out after 10s`);
     this.client = client;
   }
 
