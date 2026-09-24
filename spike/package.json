@@ -9,6 +9,7 @@
     "node": ">=20"
   },
   "scripts": {
+    "build": "tsc --noEmit",
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "dry-run": "wrangler deploy --dry-run --outdir=dist",
