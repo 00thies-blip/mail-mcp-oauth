@@ -1,4 +1,8 @@
-name = "mail-mcp-spike"
+name = "mail-mcp-oauth"
+# Matches the Worker name Cloudflare's dashboard import already created
+# for this repo -- Workers Builds requires the dashboard Worker name and
+# this file's `name` (in the configured root directory) to match, or the
+# build fails. See spike/README.md.
 main = "src/index.ts"
 compatibility_date = "2026-09-01"
 compatibility_flags = ["nodejs_compat"]
