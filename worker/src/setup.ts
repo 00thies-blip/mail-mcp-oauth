@@ -122,9 +122,12 @@ export async function routeSetup(request: Request, env: Env): Promise<Response |
   }
 
   if (request.method === "POST") {
-    // Same-origin form post only (Access cookie + CSRF).
+    // Same-origin form post only (Access cookie + CSRF). Browsers send "Origin: null" here because every
+    // response carries Referrer-Policy: no-referrer, so Sec-Fetch-Site (always sent by current browsers) decides.
     const origin = request.headers.get("Origin");
-    if (origin && origin !== new URL(env.PUBLIC_URL).origin) return html("<p>Ungültige Herkunft.</p>", 403);
+    const site = request.headers.get("Sec-Fetch-Site");
+    const sameOrigin = site ? site === "same-origin" : origin === new URL(env.PUBLIC_URL).origin;
+    if (!sameOrigin) return html("<p>Ungültige Herkunft.</p>", 403);
     const form = await request.formData();
     const raw = String(form.get("accounts") ?? "").trim();
     let accounts: Account[];
