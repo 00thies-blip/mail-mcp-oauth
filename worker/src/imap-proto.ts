@@ -358,6 +358,23 @@ export function findTextPart(bs: ImapValue | undefined): TextPart | null {
   return walk(bs, "") ?? html;
 }
 
+/** Readable text from HTML (also from a truncated fragment): drops head/style/script/comments, tags and entities. */
+export function htmlToText(html: string): string {
+  return html
+      .replace(/<(style|script|head|title)\b[\s\S]*?<\/\1>/gi, " ")
+      .replace(/<(style|script|head|title)\b[\s\S]*$/i, "")
+      .replace(/<!--[\s\S]*?(-->|$)/g, " ")
+      .replace(/<(br|\/p|\/div|\/tr|\/li|\/h[1-6])\b[^>]*>/gi, "\n")
+      .replace(/<[^>]*>/g, " ")
+      .replace(/<[^>]*$/, "")
+      .replace(/&nbsp;/g, " ")
+      .replace(/&amp;/g, "&")
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'");
+}
+
 /** Decode a (possibly truncated) body part to readable text for previews. */
 export function decodePartPreview(bytes: Uint8Array, part: TextPart, maxChars = 200): string {
   let raw = bytes;
@@ -386,20 +403,7 @@ export function decodePartPreview(bytes: Uint8Array, part: TextPart, maxChars = 
   } catch {
     text = utf8.decode(raw);
   }
-  if (part.subtype === "html") {
-    text = text
-      .replace(/<(style|script|head|title)\b[\s\S]*?<\/\1>/gi, " ")
-      .replace(/<(style|script|head|title)\b[\s\S]*$/i, "")
-      .replace(/<!--[\s\S]*?(-->|$)/g, " ")
-      .replace(/<[^>]*>/g, " ")
-      .replace(/<[^>]*$/, "")
-      .replace(/&nbsp;/g, " ")
-      .replace(/&amp;/g, "&")
-      .replace(/&lt;/g, "<")
-      .replace(/&gt;/g, ">")
-      .replace(/&quot;/g, '"')
-      .replace(/&#39;/g, "'");
-  }
+  if (part.subtype === "html") text = htmlToText(text);
   // Numeric entities also show up in plain-text parts of some senders (&#252; &#8211;).
   text = text.replace(/&#(x[0-9a-f]+|\d+);/gi, (m, n: string) => {
     const cp = n[0] === "x" || n[0] === "X" ? parseInt(n.slice(1), 16) : Number(n);

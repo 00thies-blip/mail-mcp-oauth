@@ -13,6 +13,7 @@ import {
   encodeMailboxName,
   fetchMap,
   findTextPart,
+  htmlToText,
   imapDate,
   isAscii,
   parseEnvelope,
@@ -243,7 +244,7 @@ export class ImapClient {
     }
     for (const [key, list] of byPath) {
       const path = key.split("|")[0]!;
-      const res = await this.conn.command([`UID FETCH ${list.map((i) => i.summary.uid).join(",")} (UID BODY.PEEK[${path}]<0.${list[0]?.part?.subtype === "html" ? 6000 : 1200}>)`]);
+      const res = await this.conn.command([`UID FETCH ${list.map((i) => i.summary.uid).join(",")} (UID BODY.PEEK[${path}]<0.${list[0]?.part?.subtype === "html" ? 16000 : 1200}>)`]);
       const byUidMap = new Map(list.map((i) => [i.summary.uid, i]));
       for (const d of res.data) {
         if (d.tokens[1] !== "FETCH" || !Array.isArray(d.tokens[2])) continue;
@@ -272,6 +273,8 @@ export class ImapClient {
       a ? (a.name && a.address ? `${a.name} <${a.address}>` : a.address ?? a.name ?? null) : null;
     const addrs = (l: Array<{ name?: string; address?: string }> | undefined) => (l && l.length ? l.map(addr).filter(Boolean).join(", ") : null);
     const flags = m.get("FLAGS");
+    // Like mailparser in the Render version: HTML-only mail still gets a text body.
+    const bodyText = parsed.text ?? (parsed.html ? htmlToText(parsed.html).replace(/[ \t]+/g, " ").replace(/\s*\n\s*/g, "\n").trim() || null : null);
     const refs = parsed.references ? parsed.references.split(/\s+/).filter(Boolean) : [];
     return {
       uid: Number(asText(m.get("UID")) ?? uid),
@@ -283,11 +286,11 @@ export class ImapClient {
       to: addrs(parsed.to as Array<{ name?: string; address?: string }> | undefined),
       cc: addrs(parsed.cc as Array<{ name?: string; address?: string }> | undefined),
       size: m.has("RFC822.SIZE") ? Number(asText(m.get("RFC822.SIZE"))) : source.length,
-      preview: parsed.text ? parsed.text.slice(0, 200) : null,
+      preview: bodyText ? bodyText.replace(/\s+/g, " ").trim().slice(0, 200) || null : null,
       messageId: parsed.messageId ?? null,
       inReplyTo: parsed.inReplyTo ?? null,
       references: refs,
-      bodyText: parsed.text ?? null,
+      bodyText,
       bodyHtml: parsed.html ?? null,
       attachments: parsed.attachments.map((a) => ({
         filename: a.filename ?? null,
