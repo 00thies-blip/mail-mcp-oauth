@@ -1,0 +1,29 @@
+# mail-mcp-oauth -- the real connector on Cloudflare Workers Free (replaces the
+# Render service and the Phase 0 spike in ../spike). Same Worker name as the
+# spike on purpose: ACCOUNTS_JSON is already stored on it as a secret.
+#
+# No Durable Objects, no D1, no nodejs_compat: IMAP and SMTP run over
+# cloudflare:sockets (see src/imap.ts, src/smtp.ts), OAuth is stateless JWT.
+# One KV namespace holds the mailbox accounts entered on /setup (encrypted).
+name = "mail-mcp-oauth"
+main = "src/index.ts"
+compatibility_date = "2026-09-01"
+
+[[kv_namespaces]]
+binding = "CONFIG"
+id = "daa54579e60f4e39854ecea05817126a"
+
+[vars]
+PUBLIC_URL = "https://mail-mcp-oauth.00thies.workers.dev"
+LOG_LEVEL = "info"
+# Login at /authorize and /setup happens through Cloudflare Access (e-mail
+# code to OWNER_EMAIL), same team as Mission Control. The Access application
+# "Mail MCP – Anmeldung" covers only those two paths.
+ACCESS_TEAM_DOMAIN = "lukasthies.cloudflareaccess.com"
+ACCESS_AUD = "8ff3a8db3caa1cbca5aff9f5162c39574f0da6222e6ee9d52b844c55e7efcf73"
+OWNER_EMAIL = "00thies@gmail.com"
+
+# Secrets (never in this file -- `wrangler secret put <NAME>`):
+#   JWT_SECRET     signs OAuth client ids, codes and tokens (rotate = revoke all);
+#                  also the key for the encrypted accounts in KV
+#   ACCOUNTS_JSON  optional fallback when nothing was saved on /setup yet

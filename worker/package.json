@@ -1,0 +1,30 @@
+{
+  "name": "mail-mcp-worker",
+  "version": "1.0.0",
+  "description": "mail-mcp-oauth on Cloudflare Workers Free: IMAP/SMTP MCP server with OAuth 2.1 for Claude.ai. Own IMAP/SMTP client over cloudflare:sockets (imapflow hangs under nodejs_compat), login via Cloudflare Access.",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc --noEmit && vitest run",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "jose": "^5.9.6",
+    "postal-mime": "^2.4.4",
+    "zod": "^3.23.8",
+    "zod-to-json-schema": "^3.23.5"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260923.1",
+    "typescript": "^5.7.2",
+    "vitest": "^5.0.2",
+    "wrangler": "^4.0.0"
+  }
+}
