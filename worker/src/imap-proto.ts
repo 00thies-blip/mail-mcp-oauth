@@ -400,6 +400,11 @@ export function decodePartPreview(bytes: Uint8Array, part: TextPart, maxChars = 
       .replace(/&quot;/g, '"')
       .replace(/&#39;/g, "'");
   }
+  // Numeric entities also show up in plain-text parts of some senders (&#252; &#8211;).
+  text = text.replace(/&#(x[0-9a-f]+|\d+);/gi, (m, n: string) => {
+    const cp = n[0] === "x" || n[0] === "X" ? parseInt(n.slice(1), 16) : Number(n);
+    return cp > 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : m;
+  });
   return text.replace(/�+$/, "").replace(/\s+/g, " ").trim().slice(0, maxChars);
 }
 

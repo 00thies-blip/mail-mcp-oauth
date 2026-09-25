@@ -174,3 +174,10 @@ describe("html preview", () => {
     expect(decodePartPreview(new TextEncoder().encode("<html><head><style>@media all{x{y:z}"), part)).toBe("");
   });
 });
+
+describe("entities in previews", () => {
+  it("decodes numeric entities in plain text", () => {
+    const part = { path: "1", subtype: "plain", encoding: "7bit", charset: "utf-8" };
+    expect(decodePartPreview(new TextEncoder().encode("vielen Dank f&#252;r dein Interesse &#8211; &#x2764;"), part)).toBe("vielen Dank für dein Interesse – ❤");
+  });
+});
