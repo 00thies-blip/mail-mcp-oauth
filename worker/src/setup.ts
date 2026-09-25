@@ -79,6 +79,7 @@ h1{font-size:24px;margin:0 0 6px}p,li{color:#9DB8BC}b{color:#EAF4F2}ol{padding-l
 textarea{width:100%;min-height:200px;box-sizing:border-box;font:13px ui-monospace,monospace;padding:12px;border-radius:12px;border:1px solid #27505A;background:#10262C;color:#EAF4F2}
 button{font:inherit;font-weight:600;padding:14px 18px;border-radius:12px;border:0;background:#3FD9BC;color:#070F12;margin-top:12px;cursor:pointer}
 table{width:100%;border-collapse:collapse;margin:16px 0;font-size:14px}td{padding:10px 8px;border-bottom:1px solid #27505A;vertical-align:top}tr.ok td:first-child{border-left:3px solid #3FD9BC}tr.bad td:first-child{border-left:3px solid #F09044}
+.add label{display:block;margin:10px 0 0;color:#9DB8BC;font-size:14px}.add input{display:block;width:100%;box-sizing:border-box;margin-top:4px;font:16px ui-monospace,monospace;padding:12px;border-radius:12px;border:1px solid #27505A;background:#10262C;color:#EAF4F2}
 .m{color:#F09044}.s{color:#3FD9BC}code{background:#10262C;padding:1px 5px;border-radius:6px}</style></head><body><main>
 <h1>Mail-Connector einrichten</h1><p>${esc(opts.status)}</p>
 ${opts.saved ? `<p class="s"><b>Gespeichert.</b> Claude nutzt ab sofort diese Postfächer.</p>` : ""}
@@ -89,6 +90,14 @@ ${rows ? `<table><tr><td>Postfach</td><td>Lesen (IMAP)</td><td>Senden</td></tr>$
 <li>Bei <code>ACCOUNTS_JSON</code> auf das Auge tippen, den ganzen Wert markieren und kopieren.</li>
 <li>Hier einfügen und auf <b>Prüfen und speichern</b> tippen. Jedes Postfach wird sofort testweise angemeldet (es wird nichts verschickt).</li></ol>
 <form method="post" action="/setup"><textarea name="accounts" placeholder='{"version":1,"accounts":[...]}' required></textarea><button>Prüfen und speichern</button></form>
+<h2 style="font-size:18px;margin-top:32px">Einzelnes Postfach hinzufügen</h2>
+<p>Für ein Netcup-Postfach reichen Adresse und Passwort des Postfachs (nicht das Netcup-Kundenkonto). Die übrigen Postfächer bleiben unverändert.</p>
+<form method="post" action="/setup" class="add"><input type="hidden" name="mode" value="add">
+<label>E-Mail-Adresse<input name="email" type="email" required placeholder="info@automateandgo.com"></label>
+<label>Passwort des Postfachs<input name="password" type="password" required autocomplete="off"></label>
+<label>Absendername (optional)<input name="name" placeholder="AutomateAndGo"></label>
+<label>Mailserver<input name="host" value="mxe8b7.netcup.net" required></label>
+<button>Prüfen und hinzufügen</button></form>
 <p><small>Gespeichert wird verschlüsselt. Diese Seite sieht nur, wer sich mit 00thies@gmail.com bei Cloudflare angemeldet hat.</small></p>
 </main></body></html>`;
 }
@@ -129,6 +138,7 @@ export async function routeSetup(request: Request, env: Env): Promise<Response |
     const sameOrigin = site ? site === "same-origin" : origin === new URL(env.PUBLIC_URL).origin;
     if (!sameOrigin) return html("<p>Ungültige Herkunft.</p>", 403);
     const form = await request.formData();
+    if (form.get("mode") === "add") return addMailbox(env, form);
     const raw = String(form.get("accounts") ?? "").trim();
     let accounts: Account[];
     try {
@@ -143,4 +153,41 @@ export async function routeSetup(request: Request, env: Env): Promise<Response |
     return html(page({ status: `${accounts.length} Postfächer geprüft.`, checks, saved: true }));
   }
   return html("<p>Methode nicht erlaubt.</p>", 405);
+}
+
+/** Adds (or replaces) one password mailbox, folders detected from SPECIAL-USE flags; the rest stays as saved. */
+async function addMailbox(env: Env, form: FormData): Promise<Response> {
+  const email = String(form.get("email") ?? "").trim().toLowerCase();
+  const pass = String(form.get("password") ?? "");
+  const host = String(form.get("host") ?? "").trim();
+  const name = String(form.get("name") ?? "").trim();
+  const fail = (msg: string) => html(page({ status: "Nicht hinzugefügt.", error: msg }), 400);
+  if (!/^[^\s@]+@[^\s@]+\.[a-z]{2,}$/.test(email)) return fail("Bitte eine gültige E-Mail-Adresse eingeben.");
+  if (!pass || !host) return fail("Passwort und Mailserver sind Pflicht.");
+  const id = email.replace(/\.[a-z]+$/, "").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 32);
+  const cur = await loadAccountsJson(env);
+  const list = (cur.source === "setup" && cur.json ? (JSON.parse(cur.json).accounts as Array<Record<string, unknown>>) : []).filter((a) => a.id !== id);
+  const server = { host, user: email, pass, tls: true };
+  const entry: Record<string, unknown> = {
+    id,
+    label: email,
+    imap: { ...server, port: 993 },
+    smtp: { ...server, port: 465 },
+    mail: { defaultFrom: email, ...(name ? { defaultFromName: name } : {}), draftsFolder: "Drafts", sentFolder: "Sent" },
+  };
+  // Real folder names from the server (Netcup/Dovecot may use INBOX.Drafts etc.).
+  try {
+    const folders = await withImap({ host, port: 993, user: email, pass, tls: true }, (c) => c.listMailboxes());
+    const pick = (flag: string) => folders.find((f) => f.specialUse === flag)?.path;
+    const mail = entry.mail as Record<string, unknown>;
+    mail.draftsFolder = pick("\\Drafts") ?? mail.draftsFolder;
+    mail.sentFolder = pick("\\Sent") ?? mail.sentFolder;
+  } catch (e) {
+    return fail(`Anmeldung bei ${host} fehlgeschlagen: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  const accounts = parseAccounts(JSON.stringify({ version: 1, accounts: [...list, entry] }));
+  const added = accounts.find((a) => a.id === id)!;
+  const checks = await checkAll([added]);
+  await saveAccountsJson(env, JSON.stringify({ version: 1, accounts: [...list, entry] }));
+  return html(page({ status: `${email} hinzugefügt. Jetzt ${accounts.length} Postfächer.`, checks, saved: true }));
 }
