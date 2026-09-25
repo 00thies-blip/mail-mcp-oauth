@@ -1,5 +1,9 @@
 # mail-mcp-oauth
 
+> **Stand 25.09.2026: Der Connector läuft auf Cloudflare Workers — siehe [`worker/`](worker/README.md).**
+> Connector-URL für Claude.ai: `https://mail-mcp-oauth.00thies.workers.dev/mcp`. Der Render-Dienst ist
+> abgeschaltet; alles darunter beschreibt die alte Render-Version und bleibt als Referenz.
+
 Self-hosted, **OAuth 2.1-enabled** IMAP/SMTP MCP server for Claude.ai —
 a fork of [maxx3250/claude-mail-mcp](https://github.com/maxx3250/claude-mail-mcp)
 with a built-in OAuth 2.1 + Dynamic Client Registration + PKCE layer, and
