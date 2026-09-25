@@ -232,16 +232,18 @@ export class ImapClient {
         part: findTextPart(m.get("BODYSTRUCTURE")),
       });
     }
-    // One partial FETCH per distinct text-part path (usually just "1" and "1.1").
+    // One partial FETCH per distinct text-part path and type (usually "1" and "1.1"); HTML needs more bytes to get past <head>.
     const byPath = new Map<string, typeof items>();
     for (const it of items) {
       if (!it.part || !it.summary.uid) continue;
-      const list = byPath.get(it.part.path) ?? [];
+      const key = `${it.part.path}|${it.part.subtype}`;
+      const list = byPath.get(key) ?? [];
       list.push(it);
-      byPath.set(it.part.path, list);
+      byPath.set(key, list);
     }
-    for (const [path, list] of byPath) {
-      const res = await this.conn.command([`UID FETCH ${list.map((i) => i.summary.uid).join(",")} (UID BODY.PEEK[${path}]<0.1200>)`]);
+    for (const [key, list] of byPath) {
+      const path = key.split("|")[0]!;
+      const res = await this.conn.command([`UID FETCH ${list.map((i) => i.summary.uid).join(",")} (UID BODY.PEEK[${path}]<0.${list[0]?.part?.subtype === "html" ? 6000 : 1200}>)`]);
       const byUidMap = new Map(list.map((i) => [i.summary.uid, i]));
       for (const d of res.data) {
         if (d.tokens[1] !== "FETCH" || !Array.isArray(d.tokens[2])) continue;

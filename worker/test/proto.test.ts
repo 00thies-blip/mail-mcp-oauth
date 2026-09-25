@@ -165,3 +165,12 @@ describe("mime builder", () => {
     expect(new TextDecoder().decode(dotStuff(b("a\n.b\n..c")))).toBe("a\r\n..b\r\n...c\r\n.\r\n");
   });
 });
+
+describe("html preview", () => {
+  it("skips head, unclosed style and comments of a truncated HTML part", () => {
+    const html = '<html><head><title>Facebook</title><style>@media all{*[class].x{display:none}}</style></head><body><!-- hi --><p>Hallo Lukas, schau mal</p>';
+    const part = { path: "1", subtype: "html", encoding: "7bit", charset: "utf-8" };
+    expect(decodePartPreview(new TextEncoder().encode(html), part)).toBe("Hallo Lukas, schau mal");
+    expect(decodePartPreview(new TextEncoder().encode("<html><head><style>@media all{x{y:z}"), part)).toBe("");
+  });
+});

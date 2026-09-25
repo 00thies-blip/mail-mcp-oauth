@@ -68,7 +68,40 @@ async function checkAll(accounts: Account[]): Promise<Check[]> {
   return out;
 }
 
-function page(opts: { status: string; checks?: Check[]; error?: string; saved?: boolean }): string {
+const GOOGLE_REDIRECT = "http://localhost:8765/";
+const GOOGLE_SCOPES = "https://mail.google.com/ https://www.googleapis.com/auth/gmail.send openid email";
+
+function googleSection(accounts: Account[]): string {
+  const google = accounts.filter((a) => a.google);
+  if (google.length === 0) return "";
+  const items = google
+    .map((a) => {
+      const u = new URL("https://accounts.google.com/o/oauth2/v2/auth");
+      u.search = new URLSearchParams({
+        client_id: a.google!.clientId,
+        redirect_uri: GOOGLE_REDIRECT,
+        response_type: "code",
+        scope: GOOGLE_SCOPES,
+        access_type: "offline",
+        prompt: "consent",
+        login_hint: a.imap.user,
+        state: a.id,
+      }).toString();
+      return `<li><b>${esc(a.label)}</b>: <a href="${esc(u.toString())}" target="_blank" rel="noopener">Mit Google verbinden</a></li>`;
+    })
+    .join("");
+  return `<h2 style="font-size:18px;margin-top:32px">Google-Zugang erneuern</h2>
+<p>Nur nötig, wenn oben bei einem Google-Postfach „invalid_grant“ steht.</p>
+<ol><li>Einmalig, damit der Zugang nicht nach 7 Tagen wieder verfällt: <a href="https://console.cloud.google.com/auth/audience" target="_blank" rel="noopener">Google Cloud → Zielgruppe</a> öffnen (oben das Projekt mit dem Mail-Zugang wählen) → <b>„App veröffentlichen“</b> → bestätigen.</li>
+<li>Auf den Link beim Postfach tippen, mit genau diesem Konto anmelden, bei „Google hat diese App nicht überprüft“ auf <b>Erweitert → Weiter</b>, dann alles erlauben.</li>
+<li>Danach zeigt der Browser „Seite nicht erreichbar“ (localhost) – das ist richtig. Die <b>komplette Adresse aus der Adresszeile</b> kopieren und hier einfügen:</li></ol>
+<ul>${items}</ul>
+<form method="post" action="/setup" class="add"><input type="hidden" name="mode" value="google">
+<label>Adresse aus der Adresszeile<input name="url" required placeholder="http://localhost:8765/?state=...&code=..."></label>
+<button>Google-Zugang speichern</button></form>`;
+}
+
+function page(opts: { status: string; checks?: Check[]; error?: string; saved?: boolean; accounts?: Account[] }): string {
   const rows = (opts.checks ?? [])
     .map((c) => `<tr class="${c.ok ? "ok" : "bad"}"><td><b>${esc(c.label)}</b><br><small>${esc(c.id)}</small></td><td>${esc(c.imap)}</td><td>${esc(c.send)}</td></tr>`)
     .join("");
@@ -98,6 +131,7 @@ ${rows ? `<table><tr><td>Postfach</td><td>Lesen (IMAP)</td><td>Senden</td></tr>$
 <label>Absendername (optional)<input name="name" placeholder="AutomateAndGo"></label>
 <label>Mailserver<input name="host" value="mxe8b7.netcup.net" required></label>
 <button>Prüfen und hinzufügen</button></form>
+${googleSection(opts.accounts ?? [])}
 <p><small>Gespeichert wird verschlüsselt. Diese Seite sieht nur, wer sich mit 00thies@gmail.com bei Cloudflare angemeldet hat.</small></p>
 </main></body></html>`;
 }
@@ -127,7 +161,13 @@ export async function routeSetup(request: Request, env: Env): Promise<Response |
     } catch (e) {
       status = `Gespeicherte Postfächer sind fehlerhaft: ${e instanceof Error ? e.message : e}`;
     }
-    return html(page({ status, checks }));
+    let accounts: Account[] = [];
+    try {
+      accounts = parseAccounts(cur.json);
+    } catch {
+      // status already says what is wrong
+    }
+    return html(page({ status, checks, accounts }));
   }
 
   if (request.method === "POST") {
@@ -139,6 +179,7 @@ export async function routeSetup(request: Request, env: Env): Promise<Response |
     if (!sameOrigin) return html("<p>Ungültige Herkunft.</p>", 403);
     const form = await request.formData();
     if (form.get("mode") === "add") return addMailbox(env, form);
+    if (form.get("mode") === "google") return saveGoogleGrant(env, form);
     const raw = String(form.get("accounts") ?? "").trim();
     let accounts: Account[];
     try {
@@ -190,4 +231,39 @@ async function addMailbox(env: Env, form: FormData): Promise<Response> {
   const checks = await checkAll([added]);
   await saveAccountsJson(env, JSON.stringify({ version: 1, accounts: [...list, entry] }));
   return html(page({ status: `${email} hinzugefügt. Jetzt ${accounts.length} Postfächer.`, checks, saved: true }));
+}
+
+/** Exchanges the code from the pasted localhost redirect for a new refresh token (Desktop OAuth client, loopback redirect). */
+async function saveGoogleGrant(env: Env, form: FormData): Promise<Response> {
+  const fail = (msg: string) => html(page({ status: "Google-Zugang nicht gespeichert.", error: msg }), 400);
+  let pasted: URL;
+  try {
+    pasted = new URL(String(form.get("url") ?? "").trim());
+  } catch {
+    return fail("Das ist keine vollständige Adresse. Bitte die ganze Zeile aus der Adresszeile kopieren (beginnt mit http://localhost).");
+  }
+  const code = pasted.searchParams.get("code");
+  const id = pasted.searchParams.get("state");
+  if (pasted.searchParams.get("error")) return fail(`Google meldet: ${pasted.searchParams.get("error")}`);
+  if (!code || !id) return fail("In der Adresse fehlen code oder state. Bitte den Link beim Postfach neu öffnen.");
+  const cur = await loadAccountsJson(env);
+  if (cur.source !== "setup" || !cur.json) return fail("Es sind noch keine Postfächer gespeichert.");
+  const raw = JSON.parse(cur.json) as { version: 1; accounts: Array<Record<string, unknown>> };
+  const target = raw.accounts.find((a) => a.id === id);
+  const google = target?.google as { clientId: string; clientSecret: string; refreshToken: string } | undefined;
+  if (!target || !google) return fail(`Postfach „${id}“ hat keinen Google-Zugang.`);
+  const res = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ code, client_id: google.clientId, client_secret: google.clientSecret, redirect_uri: GOOGLE_REDIRECT, grant_type: "authorization_code" }),
+  });
+  const data = (await res.json().catch(() => ({}))) as { refresh_token?: string; error?: string; error_description?: string };
+  if (!res.ok || !data.refresh_token) {
+    return fail(`Google hat keinen dauerhaften Zugang ausgestellt: ${data.error_description ?? data.error ?? res.status}. Den Link beim Postfach bitte neu öffnen (Code gilt nur einmal und kurz).`);
+  }
+  google.refreshToken = data.refresh_token;
+  await saveAccountsJson(env, JSON.stringify(raw));
+  const accounts = parseAccounts(JSON.stringify(raw));
+  const checks = await checkAll(accounts.filter((a) => a.id === id));
+  return html(page({ status: `Google-Zugang für ${String(target.label ?? id)} erneuert.`, checks, saved: true, accounts }));
 }

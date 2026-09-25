@@ -165,16 +165,20 @@ export const TOOLS: ToolDef[] = [
       const acc = await account(env, a.account);
       const built = buildMessage(outgoing(a), { email: acc.mail.defaultFrom, name: acc.mail.defaultFromName });
       let result: Record<string, unknown>;
-      if (acc.google) {
+      // A mailbox with its own SMTP password sends via SMTP (for Gmail: smtp.gmail.com + app password),
+      // so it never depends on the Google OAuth grant; the Gmail API is only for Workspace without passwords.
+      const viaApi = Boolean(acc.google) && !acc.smtp?.pass;
+      if (viaApi && acc.google) {
         result = { ...(await gmailSend(acc.google, built.raw)), accepted: built.recipients, rejected: [] };
       } else if (acc.smtp) {
         result = { ...(await smtpSend(acc.smtp, built.envelopeFrom, built.recipients, built.raw, built.messageId)) };
       } else {
         throw new Error(`Account "${acc.id}" has no smtp block in ACCOUNTS_JSON -- sending is not configured for it.`);
       }
-      // Gmail files API-sent mail in Sent by itself; everything else gets a best-effort copy.
-      let savedToSent = Boolean(acc.google);
-      if (!acc.google && acc.mail.sentFolder) {
+      // Gmail files sent mail in Sent by itself (API and smtp.gmail.com); everything else gets a best-effort copy.
+      const gmailFiles = viaApi || /(^|\.)gmail\.com$|googlemail\.com$/i.test(acc.smtp?.host ?? "");
+      let savedToSent = gmailFiles;
+      if (!gmailFiles && acc.mail.sentFolder) {
         try {
           await withImap(imapAuth(acc), (c) => c.append(acc.mail.sentFolder!, built.raw, ["\\Seen"]));
           savedToSent = true;

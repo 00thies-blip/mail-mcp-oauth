@@ -388,7 +388,9 @@ export function decodePartPreview(bytes: Uint8Array, part: TextPart, maxChars = 
   }
   if (part.subtype === "html") {
     text = text
-      .replace(/<(style|script)[\s\S]*?<\/\1>/gi, " ")
+      .replace(/<(style|script|head|title)\b[\s\S]*?<\/\1>/gi, " ")
+      .replace(/<(style|script|head|title)\b[\s\S]*$/i, "")
+      .replace(/<!--[\s\S]*?(-->|$)/g, " ")
       .replace(/<[^>]*>/g, " ")
       .replace(/<[^>]*$/, "")
       .replace(/&nbsp;/g, " ")
