@@ -10,6 +10,7 @@ import { googleAccessToken } from "./google.js";
 import { withImap } from "./imap.js";
 import { smtpVerify } from "./smtp.js";
 import { loadAccountsJson, saveAccountsJson } from "./store.js";
+import { appendAccount, withoutAccount } from "./edit.js";
 import type { Env } from "./env.js";
 
 interface Check {
@@ -101,6 +102,17 @@ function googleSection(accounts: Account[]): string {
 <button>Google-Zugang speichern</button></form>`;
 }
 
+function removeSection(accounts: Account[]): string {
+  const opts = accounts.filter((a) => !a.default).map((a) => `<option value="${esc(a.id)}">${esc(a.label)} (${esc(a.id)})</option>`).join("");
+  if (!opts) return "";
+  return `<h2 style="font-size:18px;margin-top:32px">Postfach entfernen</h2>
+<p>Entfernt genau ein Postfach; alle anderen bleiben. Das Standard-Postfach lässt sich hier nicht entfernen.</p>
+<form method="post" action="/setup" class="add"><input type="hidden" name="mode" value="remove">
+<label>Postfach<select name="id" required style="display:block;width:100%;margin-top:4px;font:16px ui-monospace,monospace;padding:12px;border-radius:12px;border:1px solid #27505A;background:#10262C;color:#EAF4F2">${opts}</select></label>
+<label><input type="checkbox" name="sicher" value="ja" required style="display:inline;width:auto;margin-right:8px">Ja, entfernen</label>
+<button>Entfernen</button></form>`;
+}
+
 function page(opts: { status: string; checks?: Check[]; error?: string; saved?: boolean; accounts?: Account[] }): string {
   const rows = (opts.checks ?? [])
     .map((c) => `<tr class="${c.ok ? "ok" : "bad"}"><td><b>${esc(c.label)}</b><br><small>${esc(c.id)}</small></td><td>${esc(c.imap)}</td><td>${esc(c.send)}</td></tr>`)
@@ -118,11 +130,12 @@ table{width:100%;border-collapse:collapse;margin:16px 0;font-size:14px}td{paddin
 ${opts.saved ? `<p class="s"><b>Gespeichert.</b> Claude nutzt ab sofort diese Postfächer.</p>` : ""}
 ${opts.error ? `<p class="m">${esc(opts.error)}</p>` : ""}
 ${rows ? `<table><tr><td>Postfach</td><td>Lesen (IMAP)</td><td>Senden</td></tr>${rows}</table>` : ""}
+<details style="margin-top:28px"><summary style="cursor:pointer;color:#F09044"><b>Alle Postfächer ersetzen</b> (Vorsicht: überschreibt die komplette Liste)</summary>
 <h2 style="font-size:18px">Postfächer übernehmen</h2>
 <ol><li>Öffne <a href="https://dashboard.render.com" target="_blank" rel="noopener">dashboard.render.com</a> → Dienst <b>mail-mcp-oauth</b> → links <b>Environment</b>.</li>
 <li>Bei <code>ACCOUNTS_JSON</code> auf das Auge tippen, den ganzen Wert markieren und kopieren.</li>
 <li>Hier einfügen und auf <b>Prüfen und speichern</b> tippen. Jedes Postfach wird sofort testweise angemeldet (es wird nichts verschickt).</li></ol>
-<form method="post" action="/setup"><textarea name="accounts" placeholder='{"version":1,"accounts":[...]}' required></textarea><button>Prüfen und speichern</button></form>
+<form method="post" action="/setup"><textarea name="accounts" placeholder='{"version":1,"accounts":[...]}' required></textarea><button>Prüfen und speichern</button></form></details>
 <h2 style="font-size:18px;margin-top:32px">Einzelnes Postfach hinzufügen</h2>
 <p>Für ein Netcup-Postfach reichen Adresse und Passwort des Postfachs (nicht das Netcup-Kundenkonto). Die übrigen Postfächer bleiben unverändert.</p>
 <form method="post" action="/setup" class="add"><input type="hidden" name="mode" value="add">
@@ -132,6 +145,7 @@ ${rows ? `<table><tr><td>Postfach</td><td>Lesen (IMAP)</td><td>Senden</td></tr>$
 <label>Mailserver<input name="host" value="mxe8b7.netcup.net" required></label>
 <button>Prüfen und hinzufügen</button></form>
 ${googleSection(opts.accounts ?? [])}
+${removeSection(opts.accounts ?? [])}
 <p><small>Gespeichert wird verschlüsselt. Diese Seite sieht nur, wer sich mit 00thies@gmail.com bei Cloudflare angemeldet hat.</small></p>
 </main></body></html>`;
 }
@@ -180,6 +194,7 @@ export async function routeSetup(request: Request, env: Env): Promise<Response |
     const form = await request.formData();
     if (form.get("mode") === "add") return addMailbox(env, form);
     if (form.get("mode") === "google") return saveGoogleGrant(env, form);
+    if (form.get("mode") === "remove") return removeMailbox(env, form);
     const raw = String(form.get("accounts") ?? "").trim();
     let accounts: Account[];
     try {
@@ -207,7 +222,7 @@ async function addMailbox(env: Env, form: FormData): Promise<Response> {
   if (!pass || !host) return fail("Passwort und Mailserver sind Pflicht.");
   const id = email.replace(/\.[a-z]+$/, "").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 32);
   const cur = await loadAccountsJson(env);
-  const list = (cur.source === "setup" && cur.json ? (JSON.parse(cur.json).accounts as Array<Record<string, unknown>>) : []).filter((a) => a.id !== id);
+
   const server = { host, user: email, pass, tls: true };
   const entry: Record<string, unknown> = {
     id,
@@ -226,11 +241,28 @@ async function addMailbox(env: Env, form: FormData): Promise<Response> {
   } catch (e) {
     return fail(`Anmeldung bei ${host} fehlgeschlagen: ${e instanceof Error ? e.message : String(e)}`);
   }
-  const accounts = parseAccounts(JSON.stringify({ version: 1, accounts: [...list, entry] }));
+  const next = appendAccount(cur.json, entry);
+  const accounts = parseAccounts(next);
   const added = accounts.find((a) => a.id === id)!;
   const checks = await checkAll([added]);
-  await saveAccountsJson(env, JSON.stringify({ version: 1, accounts: [...list, entry] }));
-  return html(page({ status: `${email} hinzugefügt. Jetzt ${accounts.length} Postfächer.`, checks, saved: true }));
+  await saveAccountsJson(env, next);
+  return html(page({ status: `${email} hinzugefügt. Jetzt ${accounts.length} Postfächer.`, checks, saved: true, accounts }));
+}
+
+async function removeMailbox(env: Env, form: FormData): Promise<Response> {
+  const id = String(form.get("id") ?? "").trim();
+  const fail = (msg: string) => html(page({ status: "Nicht entfernt.", error: msg }), 400);
+  if (form.get("sicher") !== "ja") return fail("Bitte das Häkchen „Ja, entfernen“ setzen.");
+  const cur = await loadAccountsJson(env);
+  let next: string;
+  try {
+    next = withoutAccount(cur.json, id);
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : String(e));
+  }
+  await saveAccountsJson(env, next);
+  const accounts = parseAccounts(next);
+  return html(page({ status: `${id} entfernt. Jetzt ${accounts.length} Postfächer.`, saved: true, accounts }));
 }
 
 /** Exchanges the code from the pasted localhost redirect for a new refresh token (Desktop OAuth client, loopback redirect). */
