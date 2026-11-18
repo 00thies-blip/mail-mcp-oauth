@@ -29,7 +29,7 @@ function asJson(value: unknown): ToolResult {
   return { content: [{ type: "text", text: JSON.stringify(value, null, 2) }] };
 }
 
-function imapAuth(acc: Account): ImapAuth {
+export function imapAuth(acc: Account): ImapAuth {
   const google = acc.google;
   return {
     host: acc.imap.host,
