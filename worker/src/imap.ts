@@ -209,7 +209,7 @@ export class ImapClient {
   }
 
   /** Envelope + flags + a short text preview; newest first. */
-  private async summaries(set: string, byUid: boolean): Promise<MessageSummary[]> {
+  private async summaries(set: string, byUid: boolean, withPreview = true): Promise<MessageSummary[]> {
     const r = await this.conn.command([`${byUid ? "UID " : ""}FETCH ${set} (UID FLAGS RFC822.SIZE ENVELOPE BODYSTRUCTURE)`]);
     const items: Array<{ summary: MessageSummary; part: TextPart | null }> = [];
     for (const d of r.data) {
@@ -236,7 +236,7 @@ export class ImapClient {
     // One partial FETCH per distinct text-part path and type (usually "1" and "1.1"); HTML needs more bytes to get past <head>.
     const byPath = new Map<string, typeof items>();
     for (const it of items) {
-      if (!it.part || !it.summary.uid) continue;
+      if (!withPreview || !it.part || !it.summary.uid) continue;
       const key = `${it.part.path}|${it.part.subtype}`;
       const list = byPath.get(key) ?? [];
       list.push(it);
@@ -258,6 +258,27 @@ export class ImapClient {
       }
     }
     return items.map((i) => i.summary).sort((a, b) => b.uid - a.uid || b.seq - a.seq);
+  }
+
+  /**
+   * Verkaufsmeldungen (ShopRPC, nur lesen): UIDs seit `since`, deren From einen der Absender enthält (IMAP OR-Kette),
+   * mit Umschlag ohne Textvorschau (spart CPU). Neueste zuerst, höchstens `limit`.
+   */
+  async searchFromAny(mailbox: string, senders: string[], since: string, limit = 200): Promise<MessageSummary[]> {
+    if (!senders.length) return [];
+    await this.open(mailbox, true);
+    let crit: CommandPart[] = ["FROM", quote(senders[senders.length - 1]!)];
+    for (let i = senders.length - 2; i >= 0; i--) crit = ["OR", "FROM", quote(senders[i]!), "(", ...crit, ")"];
+    const flat = crit.join(" ").replace(/\( /g, "(").replace(/ \)/g, ")");
+    const uids = await this.search([`SINCE ${imapDate(since)}`, flat]);
+    if (uids.length === 0) return [];
+    return this.summaries(uids.slice(-Math.min(limit, 300)).join(","), true, false);
+  }
+
+  /** Pfad des Ordners mit allen Mails (Gmail: \\All), sonst INBOX. */
+  async allMailPath(): Promise<string> {
+    const l = await this.listMailboxes();
+    return l.find((m) => m.specialUse === "\\All")?.path ?? "INBOX";
   }
 
   async getMessage(mailbox: string, uid: number): Promise<MessageDetail> {

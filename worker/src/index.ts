@@ -64,3 +64,6 @@ export default {
     return secure(resp);
   },
 };
+
+// Nur per Service Binding (Cockpit): Verkaufsmeldungen der Shops lesen, siehe src/shop.ts.
+export { ShopRPC } from "./shop.js";
