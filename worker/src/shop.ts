@@ -1,8 +1,9 @@
 /**
  * ShopRPC – nur per Service Binding erreichbar (nicht per HTTP). Nutzer: Worker „cockpit“ (Repo
  * expatandalucia-automation tools/cockpit, src/verkaeufe.js). Nur lesen: Verkaufsmeldungen der Shops
- * (Digistore24, Etsy, Payhip, Gumroad, Lemon Squeezy, Stripe) aus dem Konto SHOP_KONTO (Standard „gmail“).
- * Fremde Mailadressen verlassen den Worker nie: im Text steht statt der Adresse „[eigen]“ oder „[kunde]“.
+ * (Digistore24, Etsy, Payhip, Gumroad) aus dem Konto SHOP_KONTO (Standard „gmail“).
+ * Fremde Mailadressen verlassen den Worker nie: im Text steht statt der Adresse „[eigen]“ oder „[kunde]“;
+ * Namens-, Adress- und Lizenzzeilen sowie IBANs werden entfernt (ohnePerson).
  * Eine Mail je Aufruf (getMessage parst die ganze Mail; Gratistarif mit 10 ms CPU je Aufruf).
  */
 import { WorkerEntrypoint } from "cloudflare:workers";
@@ -12,7 +13,7 @@ import { withImap } from "./imap.js";
 import { imapAuth } from "./tools.js";
 import type { Env } from "./env.js";
 
-import { maskiere, SHOP_ABSENDER } from "./maske.js";
+import { maskiere, ohnePerson, SHOP_ABSENDER } from "./maske.js";
 const DATUM = /^\d{4}-\d{2}-\d{2}$/;
 
 export class ShopRPC extends WorkerEntrypoint<Env & { SHOP_KONTO?: string }> {
@@ -34,7 +35,7 @@ export class ShopRPC extends WorkerEntrypoint<Env & { SHOP_KONTO?: string }> {
     return withImap(imapAuth(await this.konto()), async (c) => {
       const m = await c.getMessage(String(ordner || "INBOX"), uid);
       const roh = (m.bodyText || "").replace(/[ \t]+/g, " ").replace(/\s*\n\s*/g, "\n").slice(0, 5000);
-      return { uid: m.uid, datum: m.date, von: String(m.from || "").replace(/^.*@/, "").replace(/>.*$/, "").toLowerCase(), betreff: maskiere(String(m.subject || ""), this.env.OWNER_EMAIL).slice(0, 200), text: maskiere(roh, this.env.OWNER_EMAIL) };
+      return { uid: m.uid, datum: m.date, von: String(m.from || "").replace(/^.*@/, "").replace(/>.*$/, "").toLowerCase(), betreff: maskiere(String(m.subject || ""), this.env.OWNER_EMAIL).slice(0, 200), text: maskiere(ohnePerson(roh), this.env.OWNER_EMAIL) };
     });
   }
 }
